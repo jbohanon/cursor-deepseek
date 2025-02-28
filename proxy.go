@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/andybalholm/brotli"
+	deepseek "github.com/danilofalcao/cursor-deepseek/internal/api/deepseek/v1"
+	openai "github.com/danilofalcao/cursor-deepseek/internal/api/openai/v1"
 	"github.com/joho/godotenv"
 	"golang.org/x/net/http2"
 )
@@ -81,58 +83,8 @@ func init() {
 	log.Printf("Initialized with model: %s using endpoint: %s", activeConfig.model, activeConfig.endpoint)
 }
 
-// Models response structure
-type ModelsResponse struct {
-	Object string  `json:"object"`
-	Data   []Model `json:"data"`
-}
-
-type Model struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	OwnedBy string `json:"owned_by"`
-}
-
 // OpenAI compatible request structure
-type ChatRequest struct {
-	Model       string      `json:"model"`
-	Messages    []Message   `json:"messages"`
-	Stream      bool        `json:"stream"`
-	Functions   []Function  `json:"functions,omitempty"`
-	Tools       []Tool      `json:"tools,omitempty"`
-	ToolChoice  interface{} `json:"tool_choice,omitempty"`
-	Temperature *float64    `json:"temperature,omitempty"`
-	MaxTokens   *int        `json:"max_tokens,omitempty"`
-}
-
-type Message struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-	Name       string     `json:"name,omitempty"`
-}
-
-type Function struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Parameters  any    `json:"parameters"`
-}
-
-type Tool struct {
-	Type     string   `json:"type"`
-	Function Function `json:"function"`
-}
-
-type ToolCall struct {
-	ID       string `json:"id"`
-	Type     string `json:"type"`
-	Function struct {
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
-	} `json:"function"`
-}
+type ChatRequest = openai.ChatCompletionRequest
 
 func convertToolChoice(choice interface{}) string {
 	if choice == nil {
@@ -157,22 +109,30 @@ func convertToolChoice(choice interface{}) string {
 	return ""
 }
 
-func convertMessages(messages []Message) []Message {
-	converted := make([]Message, len(messages))
+func convertMessages(messages []openai.Message) []deepseek.Message {
+	converted := make([]deepseek.Message, len(messages))
 	for i, msg := range messages {
 		log.Printf("Converting message %d - Role: %s", i, msg.Role)
-		converted[i] = msg
+		converted[i] = deepseek.Message{
+			Role:       msg.Role,
+			Content:    msg.Content,
+			ToolCallID: msg.ToolCallID,
+			Name:       msg.Name,
+		}
 
 		// Handle assistant messages with tool calls
 		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
 			log.Printf("Processing assistant message with %d tool calls", len(msg.ToolCalls))
 			// DeepSeek expects tool_calls in a specific format
-			toolCalls := make([]ToolCall, len(msg.ToolCalls))
+			toolCalls := make([]deepseek.ToolCall, len(msg.ToolCalls))
 			for j, tc := range msg.ToolCalls {
-				toolCalls[j] = ToolCall{
-					ID:       tc.ID,
-					Type:     "function",
-					Function: tc.Function,
+				toolCalls[j] = deepseek.ToolCall{
+					ID:   tc.ID,
+					Type: "function",
+					Function: deepseek.ToolCallFunction{
+						Name:      tc.Function.Name,
+						Arguments: tc.Function.Arguments,
+					},
 				}
 				log.Printf("Tool call %d - ID: %s, Function: %s", j, tc.ID, tc.Function.Name)
 			}
@@ -206,15 +166,7 @@ func truncateString(s string, maxLen int) string {
 }
 
 // DeepSeek request structure
-type DeepSeekRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	Stream      bool      `json:"stream"`
-	Temperature float64   `json:"temperature,omitempty"`
-	MaxTokens   int       `json:"max_tokens,omitempty"`
-	Tools       []Tool    `json:"tools,omitempty"`
-	ToolChoice  string    `json:"tool_choice,omitempty"`
-}
+type DeepSeekRequest = deepseek.Request
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)
@@ -324,13 +276,13 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Store original model name for response
 	originalModel := chatReq.Model
-	
+
 	// Convert to deepseek-chat internally
 	chatReq.Model = deepseekChatModel
 	log.Printf("Model converted to: %s (original: %s)", deepseekChatModel, originalModel)
 
 	// Convert to DeepSeek request format
-	deepseekReq := DeepSeekRequest{
+	deepseekReq := deepseek.Request{
 		Model:    deepseekChatModel,
 		Messages: convertMessages(chatReq.Messages),
 		Stream:   chatReq.Stream,
@@ -346,17 +298,21 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Handle tools/functions
 	if len(chatReq.Tools) > 0 {
-		deepseekReq.Tools = chatReq.Tools
+		deepseekReq.Tools = convertTools(chatReq.Tools)
 		if tc := convertToolChoice(chatReq.ToolChoice); tc != "" {
 			deepseekReq.ToolChoice = tc
 		}
 	} else if len(chatReq.Functions) > 0 {
 		// Convert functions to tools format
-		tools := make([]Tool, len(chatReq.Functions))
+		tools := make([]deepseek.Tool, len(chatReq.Functions))
 		for i, fn := range chatReq.Functions {
-			tools[i] = Tool{
-				Type:     "function",
-				Function: fn,
+			tools[i] = deepseek.Tool{
+				Type: "function",
+				Function: deepseek.Function{
+					Name:        fn.Name,
+					Description: fn.Description,
+					Parameters:  fn.Parameters,
+				},
 			}
 		}
 		deepseekReq.Tools = tools
@@ -459,6 +415,21 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	handleRegularResponse(w, resp, originalModel)
 }
 
+func convertTools(tools []openai.Tool) []deepseek.Tool {
+	converted := make([]deepseek.Tool, len(tools))
+	for i, tool := range tools {
+		converted[i] = deepseek.Tool{
+			Type: tool.Type,
+			Function: deepseek.Function{
+				Name:        tool.Function.Name,
+				Parameters:  tool.Function.Parameters,
+				Description: tool.Function.Description,
+			},
+		}
+	}
+	return converted
+}
+
 func handleStreamingResponse(w http.ResponseWriter, r *http.Request, resp *http.Response, originalModel string) {
 	log.Printf("Starting streaming response handling with model: %s", originalModel)
 	log.Printf("Response status: %d", resp.StatusCode)
@@ -553,22 +524,7 @@ func handleRegularResponse(w http.ResponseWriter, resp *http.Response, originalM
 	log.Printf("Original response body: %s", string(body))
 
 	// Parse the DeepSeek response
-	var deepseekResp struct {
-		ID      string `json:"id"`
-		Object  string `json:"object"`
-		Created int64  `json:"created"`
-		Model   string `json:"model"`
-		Choices []struct {
-			Index        int     `json:"index"`
-			Message      Message `json:"message"`
-			FinishReason string  `json:"finish_reason"`
-		} `json:"choices"`
-		Usage struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
-			TotalTokens      int `json:"total_tokens"`
-		} `json:"usage"`
-	}
+	var deepseekResp deepseek.Response
 
 	if err := json.Unmarshal(body, &deepseekResp); err != nil {
 		log.Printf("Error parsing DeepSeek response: %v", err)
@@ -577,61 +533,17 @@ func handleRegularResponse(w http.ResponseWriter, resp *http.Response, originalM
 	}
 
 	// Convert to OpenAI format
-	openAIResp := struct {
-		ID      string `json:"id"`
-		Object  string `json:"object"`
-		Created int64  `json:"created"`
-		Model   string `json:"model"`
-		Choices []struct {
-			Index        int     `json:"index"`
-			Message      Message `json:"message"`
-			FinishReason string  `json:"finish_reason"`
-		} `json:"choices"`
-		Usage struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
-			TotalTokens      int `json:"total_tokens"`
-		} `json:"usage"`
-	}{
+	openAIResp := openai.ChatCompletionResponse{
 		ID:      deepseekResp.ID,
 		Object:  "chat.completion",
 		Created: deepseekResp.Created,
 		Model:   originalModel,
-		Usage:   deepseekResp.Usage,
-	}
-
-	// Convert choices and ensure tool calls are properly handled
-	openAIResp.Choices = make([]struct {
-		Index        int     `json:"index"`
-		Message      Message `json:"message"`
-		FinishReason string  `json:"finish_reason"`
-	}, len(deepseekResp.Choices))
-
-	for i, choice := range deepseekResp.Choices {
-		openAIResp.Choices[i] = struct {
-			Index        int     `json:"index"`
-			Message      Message `json:"message"`
-			FinishReason string  `json:"finish_reason"`
-		}{
-			Index:        choice.Index,
-			Message:      choice.Message,
-			FinishReason: choice.FinishReason,
-		}
-
-		// Ensure tool calls are properly formatted in the message
-		if len(choice.Message.ToolCalls) > 0 {
-			log.Printf("Processing %d tool calls in choice %d", len(choice.Message.ToolCalls), i)
-			for j, tc := range choice.Message.ToolCalls {
-				log.Printf("Tool call %d: %+v", j, tc)
-				// Ensure the tool call has the required fields
-				if tc.Function.Name == "" {
-					log.Printf("Warning: Empty function name in tool call %d", j)
-					continue
-				}
-				// Keep the tool call as is since it's already in the correct format
-				openAIResp.Choices[i].Message.ToolCalls = append(openAIResp.Choices[i].Message.ToolCalls, tc)
-			}
-		}
+		Usage: openai.Usage{
+			PromptTokens:     deepseekResp.Usage.PromptTokens,
+			CompletionTokens: deepseekResp.Usage.CompletionTokens,
+			TotalTokens:      deepseekResp.Usage.TotalTokens,
+		},
+		Choices: convertResponseChoices(deepseekResp.Choices),
 	}
 
 	// Convert back to JSON
@@ -649,6 +561,49 @@ func handleRegularResponse(w http.ResponseWriter, resp *http.Response, originalM
 	w.WriteHeader(resp.StatusCode)
 	w.Write(modifiedBody)
 	log.Printf("Modified response sent successfully")
+}
+
+func convertResponseChoices(choices []deepseek.Choice) []openai.Choice {
+	openaiChoices := make([]openai.Choice, len(choices))
+	for i, choice := range choices {
+		openaiChoices[i] = openai.Choice{
+			Index:        choice.Index,
+			Message:      convertResponseMessage(choice.Message),
+			FinishReason: choice.FinishReason,
+		}
+	}
+	return openaiChoices
+}
+
+func convertResponseMessage(message deepseek.Message) openai.Message {
+	return openai.Message{
+		Role:       message.Role,
+		Content:    message.Content,
+		ToolCalls:  convertResponseToolCalls(message.ToolCalls),
+		ToolCallID: message.ToolCallID,
+		Name:       message.Name,
+	}
+}
+
+func convertResponseToolCalls(toolCalls []deepseek.ToolCall) []openai.ToolCall {
+	openaiToolCalls := make([]openai.ToolCall, 0)
+	for i, tc := range toolCalls {
+		log.Printf("Tool call %d: %+v", i, tc)
+		// Ensure the tool call has the required fields
+		if tc.Function.Name == "" {
+			log.Printf("Warning: Empty function name in tool call %d", i)
+			continue
+		}
+		openaiToolCalls = append(openaiToolCalls, openai.ToolCall{
+			ID:   tc.ID,
+			Type: tc.Type,
+			Function: openai.ToolCallFunction{
+				Name:      tc.Function.Name,
+				Arguments: tc.Function.Arguments,
+			},
+		})
+	}
+	return openaiToolCalls
 }
 
 func copyHeaders(dst, src http.Header) {
@@ -671,11 +626,11 @@ func copyHeaders(dst, src http.Header) {
 
 func handleModelsRequest(w http.ResponseWriter) {
 	log.Printf("Handling models request")
-	
+
 	// Get the requested model from the query parameters
-	response := ModelsResponse{
+	response := openai.ModelsResponse{
 		Object: "list",
-		Data: []Model{
+		Data: []openai.Model{
 			{
 				ID:      deepseekChatModel,
 				Object:  "model",
