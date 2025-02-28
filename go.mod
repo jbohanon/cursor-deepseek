@@ -1,4 +1,4 @@
-module cursor-deepseek
+module github.com/danilofalcao/cursor-deepseek
 
 go 1.19
 
