@@ -19,7 +19,8 @@ import (
 
 const (
 	ollamaEndpoint = "http://localhost:11434/api"
-	defaultModel   = "llama2"
+	// defaultModel   = "llama2"
+	defaultModel = "deepseek-r1:14b"
 )
 
 // Configuration structure
