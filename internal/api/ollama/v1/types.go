@@ -11,13 +11,10 @@ type Request struct {
 
 // Response represents a response from the Ollama API
 type Response struct {
-	Model     string `json:"model"`
-	CreatedAt string `json:"created_at"`
-	Message   struct {
-		Role    string `json:"role"`
-		Content string `json:"content"`
-	} `json:"message"`
-	Done bool `json:"done"`
+	Model     string  `json:"model"`
+	CreatedAt string  `json:"created_at"`
+	Message   Message `json:"message"`
+	Done      bool    `json:"done"`
 }
 
 // Message represents a chat message in Ollama format

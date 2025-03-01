@@ -115,6 +115,8 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Printf("chatReq: %+v", chatReq)
+
 	// Store original model name for response
 	originalModel := chatReq.Model
 	if originalModel == "" {
@@ -147,6 +149,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Printf("ollamaReqBody: %s", string(ollamaReqBody))
 	// Send request to Ollama
 	ollamaResp, err := http.Post(
 		fmt.Sprintf("%s/chat", activeConfig.endpoint),
@@ -170,21 +173,22 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 func convertMessages(messages []openai.Message) []ollama.Message {
 	ollamaMessages := make([]ollama.Message, len(messages))
 	for i, message := range messages {
-		//		var content string
-		//		switch message.Content.(type) {
-		//		case string:
-		//			content = message.Content.(string)
-		//		case []interface{}:
-		//			log.Printf("Content is an array")
-		//			for _, item := range message.Content.([]interface{}) {
-		//				if item, ok := item.(struct{ Type string; Text string }); ok {
-		//					content += item.Text
-		//				}
-		//			}
-		//		}
+		var content string
+		switch message.GetContent().(type) {
+		case openai.Content_String:
+			content = message.GetContentString()
+		case openai.Content_Array:
+			contentArray := message.GetContentArray()
+			for i := range contentArray {
+				t := contentArray.GetContentPartTextAtIndex(i).Text
+				if t != "" {
+					content += "; " + t
+				}
+			}
+		}
 		ollamaMessages[i] = ollama.Message{
 			Role:    message.Role,
-			Content: message.Content,
+			Content: content,
 		}
 	}
 	return ollamaMessages
@@ -217,31 +221,34 @@ func handleStreamingResponse(w http.ResponseWriter, r *http.Request, resp *http.
 			continue
 		}
 
-		// Convert to OpenAI format
-		openAIResp := map[string]interface{}{
-			"id":      "chatcmpl-" + time.Now().Format("20060102150405"),
-			"object":  "chat.completion.chunk",
-			"created": time.Now().Unix(),
-			"model":   originalModel,
-			"choices": []map[string]interface{}{
+		openAIResp := openai.ChatCompletionStreamResponse{
+			ID:      "chatcmpl-" + time.Now().Format("20060102150405"),
+			Object:  "chat.completion.chunk",
+			Created: time.Now().Unix(),
+			Model:   originalModel,
+			Choices: []openai.StreamChoice{
 				{
-					"index": 0,
-					"delta": map[string]interface{}{
-						"role":    "assistant",
-						"content": ollamaResp.Message.Content,
+					Index: 0,
+					Delta: openai.Delta{
+						Content: openai.Content_String{Content: ollamaResp.Message.Content},
+						Role:    "assistant",
 					},
-					"finish_reason": nil,
 				},
 			},
 		}
 
 		if ollamaResp.Done {
-			openAIResp["choices"].([]map[string]interface{})[0]["finish_reason"] = "stop"
+			openAIResp.Choices[0].FinishReason = "stop"
 		}
 
 		if data, err := json.Marshal(openAIResp); err == nil {
+			log.Printf("data: %+v", string(data))
 			fmt.Fprintf(w, "data: %s\n\n", data)
 			flusher.Flush()
+		} else {
+			log.Printf("ERROR: failed to marshal openAIResp: %s", err.Error())
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 
 		if ollamaResp.Done {
@@ -268,13 +275,14 @@ func handleRegularResponse(w http.ResponseWriter, resp *http.Response, originalM
 				Index: 0,
 				Message: openai.Message{
 					Role:    "assistant",
-					Content: ollamaResp.Message.Content,
+					Content: openai.Content_String{Content: ollamaResp.Message.Content},
 				},
 				FinishReason: "stop",
 			},
 		},
 	}
 
+	log.Printf("openAIResp: %+v", openAIResp)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(openAIResp)
 }
