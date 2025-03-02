@@ -11,21 +11,46 @@ import (
 	"golang.org/x/net/http2"
 )
 
-const (
-	ollamaEndpoint = "http://localhost:11434/api"
-	// defaultModel   = "llama2"
-	defaultModel = "deepseek-r1:14b"
-)
-
 type handler struct {
-	b backend.Backend
+	b      backend.Backend
+	apikey string
 }
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)
 
+	// Load .env file
+	log.Printf("Variant: OLLAMA")
+	if err := godotenv.Load(); err != nil {
+		log.Printf("Warning: .env file not found or error loading it: %v", err)
+	}
+
+	opts := ollama.Options{
+		Endpoint: "http://localhost:11434/api",
+		Model:    "deepseek-r1:14b",
+	}
+	// Get custom Ollama endpoint if specified
+	customEndpoint := os.Getenv("OLLAMA_API_ENDPOINT")
+	if customEndpoint != "" {
+		opts.Endpoint = customEndpoint
+	}
+
+	// Get custom Ollama endpoint if specified
+	modelenv := os.Getenv("DEFAULT_MODEL")
+	if modelenv != "" {
+		opts.Model = modelenv
+	} else {
+		//no environment set so check for command line argument
+		for i, arg := range os.Args {
+			if arg == "-model" && i+1 < len(os.Args) {
+				opts.Model = os.Args[i+1]
+			}
+		}
+	}
+
 	h := handler{
-		b: initBackend(),
+		b:      ollama.NewOllamaBackend(opts),
+		apikey: "",
 	}
 
 	server := &http.Server{
@@ -40,41 +65,6 @@ func main() {
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
-}
-
-func initBackend() backend.Backend {
-	// Load .env file
-	log.Printf("Variant: OLLAMA")
-	if err := godotenv.Load(); err != nil {
-		log.Printf("Warning: .env file not found or error loading it: %v", err)
-	}
-
-	opts := ollama.Options{}
-	// Get custom Ollama endpoint if specified
-	customEndpoint := os.Getenv("OLLAMA_API_ENDPOINT")
-	if customEndpoint != "" {
-		opts.Endpoint = customEndpoint
-	} else {
-		opts.Endpoint = ollamaEndpoint
-	}
-
-	// Get custom Ollama endpoint if specified
-	modelenv := os.Getenv("DEFAULT_MODEL")
-	if modelenv != "" {
-		opts.Model = modelenv
-	} else {
-		//no environment set so check for command line argument
-		modelFlag := defaultModel // default value
-		for i, arg := range os.Args {
-			if arg == "-model" && i+1 < len(os.Args) {
-				modelFlag = os.Args[i+1]
-			}
-		}
-		opts.Model = modelFlag
-	}
-
-	return ollama.NewOllamaBackend(opts)
-
 }
 
 func enableCors(w http.ResponseWriter) {

@@ -11,7 +11,7 @@ import (
 	"time"
 
 	ollama "github.com/danilofalcao/cursor-deepseek/internal/api/ollama/v1"
-	openai "github.com/danilofalcao/cursor-deepseek/internal/api/openai/v1"
+	"github.com/danilofalcao/cursor-deepseek/internal/api/openai/v1"
 	"github.com/danilofalcao/cursor-deepseek/internal/backend"
 )
 
