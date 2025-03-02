@@ -90,9 +90,22 @@ func convertMessages(messages []openai.Message) []deepseek.Message {
 	converted := make([]deepseek.Message, len(messages))
 	for i, msg := range messages {
 		log.Printf("Converting message %d - Role: %s", i, msg.Role)
+		var content string
+		switch msg.GetContent().(type) {
+		case openai.Content_String:
+			content = msg.GetContentString()
+		case openai.Content_Array:
+			contentArray := msg.GetContentArray()
+			for i := range contentArray {
+				t := contentArray.GetContentPartTextAtIndex(i).Text
+				if t != "" {
+					content += "; " + t
+				}
+			}
+		}
 		converted[i] = deepseek.Message{
 			Role:       msg.Role,
-			Content:    msg.Content,
+			Content:    content,
 			ToolCallID: msg.ToolCallID,
 			Name:       msg.Name,
 		}
