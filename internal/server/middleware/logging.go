@@ -9,6 +9,7 @@ import (
 
 type responseWriter struct {
 	http.ResponseWriter
+	http.Flusher
 	status        int
 	size          int
 	headerWritten bool
@@ -42,6 +43,7 @@ func withLogging(next http.Handler) http.Handler {
 		// Create wrapped response writer to capture status and size
 		wrapped := &responseWriter{
 			ResponseWriter: w,
+			Flusher:        w.(http.Flusher),
 			status:         http.StatusInternalServerError,
 		}
 
