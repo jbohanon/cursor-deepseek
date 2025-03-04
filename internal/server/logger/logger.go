@@ -60,7 +60,7 @@ func (l *Logger) Trace(ctx context.Context, s string) {
 }
 
 func (l *Logger) Tracef(ctx context.Context, s string, args ...any) {
-	l.Info(ctx, fmt.Sprintf(s, args...))
+	l.Trace(ctx, fmt.Sprintf(s, args...))
 }
 
 func (l *Logger) Debug(ctx context.Context, s string) {

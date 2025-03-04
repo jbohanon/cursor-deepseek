@@ -200,7 +200,7 @@ func handleStreamingResponse(ctx context.Context, w http.ResponseWriter, resp *h
 			return
 		}
 
-		lgr.Debugf(ctx, "data: %+v", string(data))
+		lgr.Tracef(ctx, "data: %+v", string(data))
 		fmt.Fprintf(w, "data: %s\n\n", data)
 		flusher.Flush()
 
