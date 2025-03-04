@@ -95,7 +95,7 @@ func (s *Server) Start() error {
 		return errors.Wrap(err, "error configuring HTTP/2")
 	}
 
-	logutils.FromContext(s.ctx).Infof(s.ctx, "Starting server on port %s", s.port)
+	logutils.FromContext(s.ctx).Infof(s.ctx, "Serving backend %s on port %s", s.backend.Name(), s.port)
 	return srv.ListenAndServe()
 }
 
