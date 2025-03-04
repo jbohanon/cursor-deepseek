@@ -1,0 +1,8 @@
+ollama:
+  endpoint: http://127.0.0.1:11434/api
+  model: llama3
+  api_key: ""
+port: "9000"
+log_level: debug
+timeout: 60s
+

@@ -3,100 +3,89 @@ package ollama
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"time"
 
 	ollama "github.com/danilofalcao/cursor-deepseek/internal/api/ollama/v1"
 	"github.com/danilofalcao/cursor-deepseek/internal/api/openai/v1"
 	"github.com/danilofalcao/cursor-deepseek/internal/backend"
+	logutils "github.com/danilofalcao/cursor-deepseek/internal/utils/logger"
+	"github.com/pkg/errors"
 )
-
-// TODO: Implement the Ollama backend as a backend.Backend
 
 var _ backend.Backend = &ollamaBackend{}
 
 type ollamaBackend struct {
 	endpoint string
 	model    string
+	apikey   string
+	timeout  time.Duration
 }
 
 type Options struct {
 	Endpoint string
 	Model    string
+	ApiKey   string
+	Timeout  time.Duration
 }
 
 func NewOllamaBackend(opts Options) backend.Backend {
 	return &ollamaBackend{
 		endpoint: opts.Endpoint,
 		model:    opts.Model,
+		apikey:   opts.ApiKey,
+		timeout:  opts.Timeout,
 	}
 }
 
-func (b *ollamaBackend) HandleModelsRequest(w http.ResponseWriter) {
-	log.Printf("Handling models request")
-
-	response := openai.ModelsResponse{
-		Object: "list",
-		Data: []openai.Model{
-			{
-				ID:      b.model,
-				Object:  "model",
-				Created: time.Now().Unix(),
-				OwnedBy: "ollama",
-			},
-		},
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
-	log.Printf("Models response sent successfully")
+// Name returns the name of the backend
+func (b *ollamaBackend) Name() string {
+	return "ollama"
 }
-func (b *ollamaBackend) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
-	var chatReq openai.ChatCompletionRequest
-	if err := json.NewDecoder(r.Body).Decode(&chatReq); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
 
-	log.Printf("chatReq: %+v", chatReq)
+// HandleChatCompletion handles a chat completion request. This method must capture and
+// return to the client all errors on the provided writer.
+func (b *ollamaBackend) HandleChatCompletion(ctx context.Context, w http.ResponseWriter, _ *http.Request, req *openai.ChatCompletionRequest) {
+	lgr, ctx := logutils.FromContext(ctx).Clone(b.Name())
 
 	// Store original model name for response
-	originalModel := chatReq.Model
+	originalModel := req.Model
 	if originalModel == "" {
 		originalModel = b.model
 	}
 
 	// Always use the configured model internally
-	chatReq.Model = b.model
-	log.Printf("Model converted to: %s (original: %s)", b.model, originalModel)
+	req.Model = b.model
+	lgr.Debugf(ctx, "Model converted to: %s (original: %s)", b.model, originalModel)
 
 	// Convert to Ollama request format
 	ollamaReq := ollama.Request{
 		Model:    b.model,
-		Messages: convertMessages(chatReq.Messages),
-		Stream:   chatReq.Stream,
+		Messages: convertMessages(req.Messages),
+		Stream:   req.Stream,
 	}
 
-	if chatReq.Temperature != nil {
-		ollamaReq.Temperature = *chatReq.Temperature
+	if req.Temperature != nil {
+		ollamaReq.Temperature = *req.Temperature
 	}
-	if chatReq.MaxTokens != nil {
-		ollamaReq.MaxTokens = *chatReq.MaxTokens
+	if req.MaxTokens != nil {
+		ollamaReq.MaxTokens = *req.MaxTokens
 	}
 
 	// Create Ollama request
 	ollamaReqBody, err := json.Marshal(ollamaReq)
 	if err != nil {
-		log.Printf("ERROR: failed to marshal ollama request: %s", err.Error())
+		err = errors.Wrap(err, "error marshalling ollama request")
+		lgr.Error(ctx, err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("ollamaReqBody: %s", string(ollamaReqBody))
+	lgr.Debugf(ctx, "ollamaReqBody: %s", string(ollamaReqBody))
 	// Send request to Ollama
 	ollamaResp, err := http.Post(
 		fmt.Sprintf("%s/chat", b.endpoint),
@@ -104,20 +93,40 @@ func (b *ollamaBackend) HandleChatCompletions(w http.ResponseWriter, r *http.Req
 		bytes.NewBuffer(ollamaReqBody),
 	)
 	if err != nil {
-		log.Printf("ERROR: POST failed: %s", err.Error())
+		err = errors.Wrap(err, "error POSTing ollama request")
+		lgr.Error(ctx, err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	defer ollamaResp.Body.Close()
 
-	if chatReq.Stream {
-		handleStreamingResponse(w, r, ollamaResp, originalModel)
+	if req.Stream {
+		handleStreamingResponse(ctx, w, ollamaResp, originalModel)
 	} else {
-		handleRegularResponse(w, ollamaResp, originalModel)
+		handleRegularResponse(ctx, w, ollamaResp, originalModel)
 	}
 }
 
-func handleStreamingResponse(w http.ResponseWriter, _ *http.Request, resp *http.Response, originalModel string) {
+// ListModels returns the list of available models
+func (b *ollamaBackend) ListModels(ctx context.Context) ([]openai.Model, error) {
+	return []openai.Model{
+		{
+			ID:      b.model,
+			Object:  "model",
+			Created: time.Now().Unix(),
+			OwnedBy: "ollama",
+		},
+	}, nil
+}
+
+// ValidateAPIKey validates the provided API key
+func (b *ollamaBackend) ValidateAPIKey(apiKey string) bool {
+	// TODO: implement API key validation for ollama
+	return true
+}
+
+func handleStreamingResponse(ctx context.Context, w http.ResponseWriter, resp *http.Response, originalModel string) {
+	lgr := logutils.FromContext(ctx)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -125,6 +134,7 @@ func handleStreamingResponse(w http.ResponseWriter, _ *http.Request, resp *http.
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
+		lgr.Error(ctx, "streaming unsupported")
 		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
 		return
 	}
@@ -134,14 +144,17 @@ func handleStreamingResponse(w http.ResponseWriter, _ *http.Request, resp *http.
 		line, err := reader.ReadBytes('\n')
 		if err != nil {
 			if err != io.EOF {
-				log.Printf("Error reading stream: %v", err)
+				err = errors.Wrap(err, "error reading stream")
+				lgr.Error(ctx, err.Error())
+				return // the break below gets out of the loop and returns, but it's a long loop
 			}
 			break
 		}
 
 		var ollamaResp ollama.Response
 		if err := json.Unmarshal(line, &ollamaResp); err != nil {
-			log.Printf("Error unmarshaling response: %v", err)
+			err = errors.Wrapf(err, "error unmarshaling response %s", string(line))
+			lgr.Error(ctx, err.Error())
 			continue
 		}
 
@@ -165,15 +178,17 @@ func handleStreamingResponse(w http.ResponseWriter, _ *http.Request, resp *http.
 			openAIResp.Choices[0].FinishReason = "stop"
 		}
 
-		if data, err := json.Marshal(openAIResp); err == nil {
-			log.Printf("data: %+v", string(data))
-			fmt.Fprintf(w, "data: %s\n\n", data)
-			flusher.Flush()
-		} else {
-			log.Printf("ERROR: failed to marshal openAIResp: %s", err.Error())
+		data, err := json.Marshal(openAIResp)
+		if err != nil {
+			err = errors.Wrap(err, "error marshaling OpenAI response")
+			lgr.Error(ctx, err.Error())
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		lgr.Debugf(ctx, "data: %+v", string(data))
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		flusher.Flush()
 
 		if ollamaResp.Done {
 			break
@@ -181,9 +196,21 @@ func handleStreamingResponse(w http.ResponseWriter, _ *http.Request, resp *http.
 	}
 }
 
-func handleRegularResponse(w http.ResponseWriter, resp *http.Response, originalModel string) {
+func handleRegularResponse(ctx context.Context, w http.ResponseWriter, resp *http.Response, originalModel string) {
+	lgr := logutils.FromContext(ctx)
 	var ollamaResp ollama.Response
-	if err := json.NewDecoder(resp.Body).Decode(&ollamaResp); err != nil {
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		err = errors.Wrapf(err, "error reading response: %s", string(b))
+		lgr.Error(ctx, err.Error())
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	err = json.Unmarshal(b, &ollamaResp)
+	if err != nil {
+		err = errors.Wrapf(err, "error unmarshaling response: %s", string(b))
+		lgr.Error(ctx, err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -206,7 +233,10 @@ func handleRegularResponse(w http.ResponseWriter, resp *http.Response, originalM
 		},
 	}
 
-	log.Printf("openAIResp: %+v", openAIResp)
+	lgr.Debugf(ctx, "openAIResp: %+v", openAIResp)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(openAIResp)
+	if err := json.NewEncoder(w).Encode(openAIResp); err != nil {
+		err = errors.Wrap(err, "error encoding JSON response on the wire")
+		lgr.Error(ctx, err.Error())
+	}
 }
