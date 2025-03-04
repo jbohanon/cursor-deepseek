@@ -22,25 +22,28 @@ import (
 var _ backend.Backend = &openrouterBackend{}
 
 type openrouterBackend struct {
-	endpoint string
-	model    string
-	apikey   string
-	timeout  time.Duration
+	endpoint     string
+	models       map[string]string
+	defaultModel string
+	apikey       string
+	timeout      time.Duration
 }
 
 type Options struct {
-	Endpoint string
-	Model    string
-	ApiKey   string
-	Timeout  time.Duration
+	Endpoint     string
+	Models       map[string]string
+	DefaultModel string
+	ApiKey       string
+	Timeout      time.Duration
 }
 
 func NewOpenrouterBackend(opts Options) backend.Backend {
 	return &openrouterBackend{
-		endpoint: opts.Endpoint,
-		model:    opts.Model,
-		apikey:   opts.ApiKey,
-		timeout:  opts.Timeout,
+		endpoint:     opts.Endpoint,
+		models:       opts.Models,
+		defaultModel: opts.DefaultModel,
+		apikey:       opts.ApiKey,
+		timeout:      opts.Timeout,
 	}
 }
 
@@ -59,13 +62,17 @@ func (b *openrouterBackend) HandleChatCompletion(ctx context.Context, w http.Res
 	// Store original model name for response
 	originalModel := req.Model
 
-	// Convert to deepseek-chat internally
-	req.Model = b.model
-	lgr.Debugf(ctx, "Model converted to: %s (original: %s)", b.model, originalModel)
+	// Convert model internally
+	mappedModel, ok := b.models[originalModel]
+	if !ok {
+		mappedModel = b.defaultModel
+	}
+	req.Model = mappedModel
+	lgr.Debugf(ctx, "Model converted to: %s (original: %s)", mappedModel, originalModel)
 
 	// Convert to DeepSeek request format
 	deepseekReq := deepseek.Request{
-		Model:    b.model,
+		Model:    mappedModel,
 		Messages: convertMessages(ctx, req.Messages),
 		Stream:   req.Stream,
 	}
@@ -213,14 +220,24 @@ func (b *openrouterBackend) HandleChatCompletion(ctx context.Context, w http.Res
 
 // ListModels returns the list of available models
 func (b *openrouterBackend) ListModels(ctx context.Context) ([]openai.Model, error) {
-	return []openai.Model{
-		{
-			ID:      b.model,
+	openAiModels := make([]openai.Model, 0, len(b.models))
+	for servedModel := range b.models {
+		openAiModels = append(openAiModels, openai.Model{
+			ID:      servedModel,
 			Object:  "model",
 			Created: time.Now().Unix(),
 			OwnedBy: "deepseek",
-		},
-	}, nil
+		})
+	}
+	if len(openAiModels) == 0 {
+		openAiModels = append(openAiModels, openai.Model{
+			ID:      b.defaultModel,
+			Object:  "model",
+			Created: time.Now().Unix(),
+			OwnedBy: "deepseek",
+		})
+	}
+	return openAiModels, nil
 }
 
 // ValidateAPIKey validates the provided API key
