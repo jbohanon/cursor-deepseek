@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net"
 	"net/http"
 	"time"
@@ -49,15 +48,15 @@ func New(ctx context.Context, opts Options) (*Server, error) {
 	ctx = logutils.ContextWithLogger(ctx, lgr)
 
 	timeout, err := time.ParseDuration(opts.Timeout)
-	if err != nil {
+	if err != nil || opts.Timeout == "" {
 		timeout = time.Second * 30
 	}
 
 	if opts.Port == "" {
-		return nil, fmt.Errorf("port is required")
+		return nil, errors.New("port is required")
 	}
 	if opts.Backend == nil {
-		return nil, fmt.Errorf("backend is required")
+		return nil, errors.New("backend is required")
 	}
 
 	return &Server{
@@ -93,7 +92,7 @@ func (s *Server) Start() error {
 
 	// Enable HTTP/2 support
 	if err := http2.ConfigureServer(srv, nil); err != nil {
-		return fmt.Errorf("error configuring HTTP/2: %w", err)
+		return errors.Wrap(err, "error configuring HTTP/2")
 	}
 
 	logutils.FromContext(s.ctx).Infof(s.ctx, "Starting server on port %s", s.port)

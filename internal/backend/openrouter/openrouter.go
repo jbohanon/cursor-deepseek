@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log"
 	"maps"
 	"net/http"
 	"time"
@@ -67,7 +66,7 @@ func (b *openrouterBackend) HandleChatCompletion(ctx context.Context, w http.Res
 	// Convert to DeepSeek request format
 	deepseekReq := deepseek.Request{
 		Model:    b.model,
-		Messages: convertMessages(req.Messages),
+		Messages: convertMessages(ctx, req.Messages),
 		Stream:   req.Stream,
 	}
 
@@ -125,7 +124,7 @@ func (b *openrouterBackend) HandleChatCompletion(ctx context.Context, w http.Res
 		targetURL += "?" + r.URL.RawQuery
 	}
 
-	log.Printf("Forwarding to: %s", targetURL)
+	lgr.Debugf(ctx, "Forwarding to: %s", targetURL)
 	proxyReq, err := http.NewRequest(r.Method, targetURL, bytes.NewReader(modifiedBody))
 	if err != nil {
 		err = errors.Wrap(err, "error creating proxy request")

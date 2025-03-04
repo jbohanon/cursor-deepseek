@@ -3,11 +3,11 @@ package openrouter
 import (
 	"compress/flate"
 	"compress/gzip"
-	"fmt"
 	"io"
 	"net/http"
 
 	"github.com/andybalholm/brotli"
+	"github.com/pkg/errors"
 )
 
 func copyHeaders(dst, src http.Header) {
@@ -35,7 +35,7 @@ func readResponse(resp *http.Response) ([]byte, error) {
 	case "gzip":
 		gzReader, err := gzip.NewReader(resp.Body)
 		if err != nil {
-			return nil, fmt.Errorf("error creating gzip reader: %v", err)
+			return nil, errors.Wrap(err, "error creating gzip reader")
 		}
 		defer gzReader.Close()
 		reader = gzReader

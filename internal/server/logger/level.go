@@ -13,6 +13,8 @@ const (
 	FATAL
 )
 
+type LogLevel int
+
 func LevelFromString(level string) LogLevel {
 	defaultLogLevel := LogLevel(INFO)
 	switch strings.ToLower(level) {
@@ -51,30 +53,4 @@ func (l LogLevel) String() string {
 	}
 
 	return "UNKNOWN"
-}
-
-type LogLevel int
-
-func (LogLevel) Trace() int {
-	return TRACE
-}
-
-func (LogLevel) Debug() int {
-	return DEBUG
-}
-
-func (LogLevel) Info() int {
-	return INFO
-}
-
-func (LogLevel) Warn() int {
-	return WARN
-}
-
-func (LogLevel) Error() int {
-	return ERROR
-}
-
-func (LogLevel) Fatal() int {
-	return FATAL
 }

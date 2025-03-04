@@ -10,7 +10,7 @@ import (
 )
 
 var (
-	fallbackLogger = New(context.Background(), "fallback", DEBUG, make(chan string))
+	Fallback = New(context.Background(), "fallback", DEBUG, make(chan string))
 )
 
 type Logger struct {
@@ -27,12 +27,6 @@ func New(ctx context.Context, name string, level LogLevel, exitCh chan string) *
 		level:  level,
 		exitCh: exitCh,
 	}
-}
-func FromLogger(lgr *Logger, name string) *Logger {
-	if lgr == nil {
-		return fallbackLogger
-	}
-	return New(lgr.ctx, name, lgr.level, lgr.exitCh)
 }
 
 func out(ctx context.Context, s string, level LogLevel) {

@@ -66,7 +66,7 @@ func (b *deepseekBackend) HandleChatCompletion(ctx context.Context, w http.Respo
 	// Convert to DeepSeek request format
 	deepseekReq := deepseek.Request{
 		Model:    b.model,
-		Messages: convertMessages(req.Messages),
+		Messages: convertMessages(ctx, req.Messages),
 		Stream:   req.Stream,
 	}
 
@@ -336,7 +336,7 @@ func handleRegularResponse(ctx context.Context, w http.ResponseWriter, resp *htt
 			CompletionTokens: deepseekResp.Usage.CompletionTokens,
 			TotalTokens:      deepseekResp.Usage.TotalTokens,
 		},
-		Choices: convertResponseChoices(deepseekResp.Choices),
+		Choices: convertResponseChoices(ctx, deepseekResp.Choices),
 	}
 
 	// Convert back to JSON
