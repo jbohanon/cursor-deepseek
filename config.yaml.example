@@ -1,7 +1,11 @@
 ollama:
   endpoint: http://127.0.0.1:11434/api
-  model: llama3
   api_key: ""
+  defaultModel: llama2
+  models:
+    gpt-4o: deepseek-r1:8b
+    o1: deepseek-r1:14b
+    gpt-3.5-turbo: llama3
 port: "9000"
 log_level: debug
 timeout: 60s
