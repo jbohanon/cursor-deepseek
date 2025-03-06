@@ -11,16 +11,16 @@ import (
 	"os"
 	"time"
 
+	ollama "github.com/danilofalcao/cursor-deepseek/internal/api/ollama/v1"
+	openai "github.com/danilofalcao/cursor-deepseek/internal/api/openai/v1"
 	"github.com/joho/godotenv"
 	"golang.org/x/net/http2"
 )
 
 const (
-	ollamaEndpoint     = "http://localhost:11434/api"
-	defaultModel       = "llama2"
-	deepseekChatModel  = "michaelneale/deepseek-r1-goose"
-	deepseekCoderModel = "deepseek-coder"
-	gpt4oModel         = "gpt-4o"
+	ollamaEndpoint = "http://localhost:11434/api"
+	// defaultModel   = "llama2"
+	defaultModel = "deepseek-r1:14b"
 )
 
 // Configuration structure
@@ -62,65 +62,6 @@ func init() {
 	}
 
 	log.Printf("Initialized with model: %s using endpoint: %s", activeConfig.model, activeConfig.endpoint)
-}
-
-// OpenAI compatible structures
-type ChatRequest struct {
-	Model       string      `json:"model"`
-	Messages    []Message   `json:"messages"`
-	Stream      bool        `json:"stream"`
-	Functions   []Function  `json:"functions,omitempty"`
-	Tools       []Tool      `json:"tools,omitempty"`
-	ToolChoice  interface{} `json:"tool_choice,omitempty"`
-	Temperature *float64    `json:"temperature,omitempty"`
-	MaxTokens   *int        `json:"max_tokens,omitempty"`
-}
-
-type Message struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-	Name       string     `json:"name,omitempty"`
-}
-
-type Function struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Parameters  any    `json:"parameters"`
-}
-
-type Tool struct {
-	Type     string   `json:"type"`
-	Function Function `json:"function"`
-}
-
-type ToolCall struct {
-	ID       string `json:"id"`
-	Type     string `json:"type"`
-	Function struct {
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
-	} `json:"function"`
-}
-
-// Ollama specific structures
-type OllamaRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	Stream      bool      `json:"stream"`
-	Temperature float64   `json:"temperature,omitempty"`
-	MaxTokens   int       `json:"max_tokens,omitempty"`
-}
-
-type OllamaResponse struct {
-	Model     string `json:"model"`
-	CreatedAt string `json:"created_at"`
-	Message   struct {
-		Role    string `json:"role"`
-		Content string `json:"content"`
-	} `json:"message"`
-	Done bool `json:"done"`
 }
 
 func main() {
@@ -169,11 +110,13 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
-	var chatReq ChatRequest
+	var chatReq openai.ChatCompletionRequest
 	if err := json.NewDecoder(r.Body).Decode(&chatReq); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+
+	log.Printf("chatReq: %+v", chatReq)
 
 	// Store original model name for response
 	originalModel := chatReq.Model
@@ -186,9 +129,9 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Model converted to: %s (original: %s)", activeConfig.model, originalModel)
 
 	// Convert to Ollama request format
-	ollamaReq := OllamaRequest{
+	ollamaReq := ollama.Request{
 		Model:    activeConfig.model,
-		Messages: chatReq.Messages,
+		Messages: convertMessages(chatReq.Messages),
 		Stream:   chatReq.Stream,
 	}
 
@@ -207,6 +150,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Printf("ollamaReqBody: %s", string(ollamaReqBody))
 	// Send request to Ollama
 	ollamaResp, err := http.Post(
 		fmt.Sprintf("%s/chat", activeConfig.endpoint),
@@ -225,6 +169,30 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	} else {
 		handleRegularResponse(w, ollamaResp, originalModel)
 	}
+}
+
+func convertMessages(messages []openai.Message) []ollama.Message {
+	ollamaMessages := make([]ollama.Message, len(messages))
+	for i, message := range messages {
+		var content string
+		switch message.GetContent().(type) {
+		case openai.Content_String:
+			content = message.GetContentString()
+		case openai.Content_Array:
+			contentArray := message.GetContentArray()
+			for i := range contentArray {
+				t := contentArray.GetContentPartTextAtIndex(i).Text
+				if t != "" {
+					content += "; " + t
+				}
+			}
+		}
+		ollamaMessages[i] = ollama.Message{
+			Role:    message.Role,
+			Content: content,
+		}
+	}
+	return ollamaMessages
 }
 
 func handleStreamingResponse(w http.ResponseWriter, r *http.Request, resp *http.Response, originalModel string) {
@@ -248,37 +216,40 @@ func handleStreamingResponse(w http.ResponseWriter, r *http.Request, resp *http.
 			break
 		}
 
-		var ollamaResp OllamaResponse
+		var ollamaResp ollama.Response
 		if err := json.Unmarshal(line, &ollamaResp); err != nil {
 			log.Printf("Error unmarshaling response: %v", err)
 			continue
 		}
 
-		// Convert to OpenAI format
-		openAIResp := map[string]interface{}{
-			"id":      "chatcmpl-" + time.Now().Format("20060102150405"),
-			"object":  "chat.completion.chunk",
-			"created": time.Now().Unix(),
-			"model":   originalModel,
-			"choices": []map[string]interface{}{
+		openAIResp := openai.ChatCompletionStreamResponse{
+			ID:      "chatcmpl-" + time.Now().Format("20060102150405"),
+			Object:  "chat.completion.chunk",
+			Created: time.Now().Unix(),
+			Model:   originalModel,
+			Choices: []openai.StreamChoice{
 				{
-					"index": 0,
-					"delta": map[string]interface{}{
-						"role":    "assistant",
-						"content": ollamaResp.Message.Content,
+					Index: 0,
+					Delta: openai.Delta{
+						Content: openai.Content_String{Content: ollamaResp.Message.Content},
+						Role:    "assistant",
 					},
-					"finish_reason": nil,
 				},
 			},
 		}
 
 		if ollamaResp.Done {
-			openAIResp["choices"].([]map[string]interface{})[0]["finish_reason"] = "stop"
+			openAIResp.Choices[0].FinishReason = "stop"
 		}
 
 		if data, err := json.Marshal(openAIResp); err == nil {
+			log.Printf("data: %+v", string(data))
 			fmt.Fprintf(w, "data: %s\n\n", data)
 			flusher.Flush()
+		} else {
+			log.Printf("ERROR: failed to marshal openAIResp: %s", err.Error())
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 
 		if ollamaResp.Done {
@@ -288,40 +259,41 @@ func handleStreamingResponse(w http.ResponseWriter, r *http.Request, resp *http.
 }
 
 func handleRegularResponse(w http.ResponseWriter, resp *http.Response, originalModel string) {
-	var ollamaResp OllamaResponse
+	var ollamaResp ollama.Response
 	if err := json.NewDecoder(resp.Body).Decode(&ollamaResp); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	// Convert to OpenAI format
-	openAIResp := map[string]interface{}{
-		"id":      "chatcmpl-" + time.Now().Format("20060102150405"),
-		"object":  "chat.completion",
-		"created": time.Now().Unix(),
-		"model":   originalModel,
-		"choices": []map[string]interface{}{
+	openAIResp := openai.ChatCompletionResponse{
+		ID:      "chatcmpl-" + time.Now().Format("20060102150405"),
+		Object:  "chat.completion",
+		Created: time.Now().Unix(),
+		Model:   originalModel,
+		Choices: []openai.Choice{
 			{
-				"index": 0,
-				"message": map[string]interface{}{
-					"role":    "assistant",
-					"content": ollamaResp.Message.Content,
+				Index: 0,
+				Message: openai.Message{
+					Role:    "assistant",
+					Content: openai.Content_String{Content: ollamaResp.Message.Content},
 				},
-				"finish_reason": "stop",
+				FinishReason: "stop",
 			},
 		},
 	}
 
+	log.Printf("openAIResp: %+v", openAIResp)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(openAIResp)
 }
 
 func handleModelsRequest(w http.ResponseWriter) {
 	log.Printf("Handling models request")
-	
-	response := ModelsResponse{
+
+	response := openai.ModelsResponse{
 		Object: "list",
-		Data: []Model{
+		Data: []openai.Model{
 			{
 				ID:      activeConfig.model,
 				Object:  "model",
@@ -334,16 +306,4 @@ func handleModelsRequest(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 	log.Printf("Models response sent successfully")
-}
-
-type ModelsResponse struct {
-	Object string  `json:"object"`
-	Data   []Model `json:"data"`
-}
-
-type Model struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	OwnedBy string `json:"owned_by"`
 }
