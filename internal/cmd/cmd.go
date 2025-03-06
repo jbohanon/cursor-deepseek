@@ -78,11 +78,13 @@ func Run() {
 		log.Fatal(err)
 	}
 
+	be, apikey := getBackendAndApiKey(v)
 	svr, err := server.New(ctx, server.Options{
 		Port:     cfg.Port,
-		Backend:  getBackend(v),
-		LogLevel: "debug",
-		Timeout:  "30s",
+		Backend:  be,
+		ApiKey:   apikey,
+		LogLevel: cfg.Loglevel,
+		Timeout:  cfg.Timeout,
 		ExitCh:   exitCh,
 	})
 	if err != nil {
@@ -104,35 +106,39 @@ func Run() {
 
 }
 
-func getBackend(v *viper.Viper) backend.Backend {
+func getBackendAndApiKey(v *viper.Viper) (backend.Backend, string) {
 	var be backend.Backend
+	var apikey string
 	switch {
 	case v.IsSet("deepseek#api_key"):
+		apikey = v.GetString("deepseek#api_key")
 		be = deepseek.NewDeepseekBackend(deepseek.Options{
 			Endpoint:     v.GetString("deepseek#endpoint"),
 			DefaultModel: v.GetString("deepseek#default_model"),
 			Models:       v.GetStringMapString("deepseek#models"),
-			ApiKey:       v.GetString("deepseek#api_key"),
+			ApiKey:       apikey,
 			Timeout:      v.GetDuration("timeout"),
 		})
 	case v.IsSet("openrouter#api_key"):
+		apikey = v.GetString("openrouter#api_key")
 		be = openrouter.NewOpenrouterBackend(openrouter.Options{
 			Endpoint:     v.GetString("openrouter#endpoint"),
 			DefaultModel: v.GetString("openrouter#default_model"),
 			Models:       v.GetStringMapString("openrouter#models"),
-			ApiKey:       v.GetString("openrouter#api_key"),
+			ApiKey:       apikey,
 			Timeout:      v.GetDuration("timeout"),
 		})
 	case v.IsSet("ollama#endpoint"):
+		apikey = v.GetString("ollama#api_key")
 		be = ollama.NewOllamaBackend(ollama.Options{
 			Endpoint:     v.GetString("ollama#endpoint"),
 			DefaultModel: v.GetString("ollama#default_model"),
 			Models:       v.GetStringMapString("ollama#models"),
-			ApiKey:       v.GetString("ollama#api_key"),
+			ApiKey:       apikey,
 			Timeout:      v.GetDuration("timeout"),
 		})
 	default:
 		log.Fatal("unable to determine backend")
 	}
-	return be
+	return be, apikey
 }

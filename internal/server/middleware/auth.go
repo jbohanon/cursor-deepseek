@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"log"
 	"net/http"
 	"strings"
 
@@ -21,6 +22,7 @@ func withApiKeyAuth(next http.Handler, apikey string, apikeyValidation func(apik
 			return
 		}
 
+		log.Println(apiKey)
 		if !apikeyValidation(apiKey) {
 			logutils.FromContext(ctx).Warn(ctx, "Invalid API Key provided")
 			http.Error(w, "Invalid API key", http.StatusForbidden)

@@ -13,6 +13,7 @@ import (
 	ollama "github.com/danilofalcao/cursor-deepseek/internal/api/ollama/v1"
 	"github.com/danilofalcao/cursor-deepseek/internal/api/openai/v1"
 	"github.com/danilofalcao/cursor-deepseek/internal/backend"
+	"github.com/danilofalcao/cursor-deepseek/internal/utils"
 	logutils "github.com/danilofalcao/cursor-deepseek/internal/utils/logger"
 	"github.com/pkg/errors"
 )
@@ -135,8 +136,7 @@ func (b *ollamaBackend) ListModels(ctx context.Context) ([]openai.Model, error) 
 
 // ValidateAPIKey validates the provided API key
 func (b *ollamaBackend) ValidateAPIKey(apiKey string) bool {
-	// TODO: implement API key validation for ollama
-	return true
+	return utils.SecureCompareString(apiKey, b.apikey)
 }
 
 func handleStreamingResponse(ctx context.Context, w http.ResponseWriter, resp *http.Response, originalModel string) {
