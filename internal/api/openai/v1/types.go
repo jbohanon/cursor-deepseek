@@ -1,8 +1,10 @@
 package openai
 
 import (
+	"context"
 	"encoding/json"
-	"log"
+
+	"github.com/danilofalcao/cursor-deepseek/internal/server/logger"
 )
 
 // ChatCompletionRequest represents an OpenAI-compatible chat completion request
@@ -108,6 +110,8 @@ func (d *Delta) MarshalJSON() ([]byte, error) {
 	return json.Marshal(msgMap)
 }
 func (d *Delta) UnmarshalJSON(data []byte) error {
+	// we will have to use the fallback logger here
+	lgr := logger.Fallback
 	var err error
 	var msg map[string]interface{}
 	if err = json.Unmarshal(data, &msg); err != nil {
@@ -131,10 +135,10 @@ func (d *Delta) UnmarshalJSON(data []byte) error {
 					if val["type"] == "text" {
 						contentArrayParts[i] = ContentPart_Text{Type: "text", Text: val["text"].(string)}
 					} else {
-						log.Printf("Unknown content part type: %s", val["type"])
+						lgr.Errorf(context.Background(), "Unknown content part type: %s", val["type"])
 					}
 				default:
-					log.Printf("Unknown content part type: %T", val)
+					lgr.Errorf(context.Background(), "Unknown content part type: %T", val)
 				}
 			}
 			d.Content = contentArrayParts
@@ -199,6 +203,7 @@ func (m *Message) MarshalJSON() ([]byte, error) {
 	return json.Marshal(msgMap)
 }
 func (m *Message) UnmarshalJSON(data []byte) error {
+	lgr := logger.Fallback
 	var err error
 	var msg map[string]interface{}
 	if err = json.Unmarshal(data, &msg); err != nil {
@@ -222,10 +227,10 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 					if val["type"] == "text" {
 						contentArrayParts[i] = ContentPart_Text{Type: "text", Text: val["text"].(string)}
 					} else {
-						log.Printf("Unknown content part type: %s", val["type"])
+						lgr.Errorf(context.Background(), "Unknown content part type: %s", val["type"])
 					}
 				default:
-					log.Printf("Unknown content part type: %T", val)
+					lgr.Errorf(context.Background(), "Unknown content part type: %T", val)
 				}
 			}
 			m.Content = contentArrayParts

@@ -6,17 +6,20 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log"
 	"net/http"
 	"time"
+
+	"maps"
 
 	"github.com/danilofalcao/cursor-deepseek/internal/api/deepseek/v1"
 	"github.com/danilofalcao/cursor-deepseek/internal/api/openai/v1"
 	"github.com/danilofalcao/cursor-deepseek/internal/backend"
+	deepseekconstants "github.com/danilofalcao/cursor-deepseek/internal/constants/deepseek"
+	"github.com/danilofalcao/cursor-deepseek/internal/utils"
+	logutils "github.com/danilofalcao/cursor-deepseek/internal/utils/logger"
+	"github.com/pkg/errors"
 	"golang.org/x/net/http2"
 )
-
-// TODO: Implement the DeepSeek backend as a backend.Backend
 
 var _ backend.Backend = &deepseekBackend{}
 
@@ -24,107 +27,67 @@ type deepseekBackend struct {
 	endpoint string
 	model    string
 	apikey   string
+	timeout  time.Duration
 }
 
 type Options struct {
 	Endpoint string
 	Model    string
 	ApiKey   string
+	Timeout  time.Duration
 }
 
 func NewDeepseekBackend(opts Options) backend.Backend {
 	return &deepseekBackend{
 		endpoint: opts.Endpoint,
 		model:    opts.Model,
+		apikey:   opts.ApiKey,
+		timeout:  opts.Timeout,
 	}
 }
 
-func (b *deepseekBackend) HandleModelsRequest(w http.ResponseWriter) {
-	log.Printf("Handling models request")
-
-	// Get the requested model from the query parameters
-	response := openai.ModelsResponse{
-		Object: "list",
-		Data: []openai.Model{
-			{
-				ID:      b.model,
-				Object:  "model",
-				Created: time.Now().Unix(),
-				OwnedBy: "deepseek",
-			},
-		},
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
-	log.Printf("Models response sent successfully")
+// Name returns the name of the backend
+func (b *deepseekBackend) Name() string {
+	return "deepseek"
 }
-func (b *deepseekBackend) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
-	// Read and log request body for debugging
-	var chatReq openai.ChatCompletionRequest
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		log.Printf("Error reading request body: %v", err)
-		http.Error(w, "Error reading request", http.StatusBadRequest)
-		return
-	}
-	r.Body = io.NopCloser(bytes.NewBuffer(body))
 
-	if err := json.Unmarshal(body, &chatReq); err != nil {
-		log.Printf("Error parsing request JSON: %v", err)
-		log.Printf("Raw request body: %s", string(body))
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
-		return
-	}
-
-	log.Printf("Parsed request: %+v", chatReq)
-
-	// Restore the body for further reading
-	r.Body = io.NopCloser(bytes.NewBuffer(body))
-
-	log.Printf("Request body: %s", string(body))
-
-	// Parse the request to check for streaming - reuse existing chatReq
-	if err := json.Unmarshal(body, &chatReq); err != nil {
-		log.Printf("Error parsing request JSON: %v", err)
-		http.Error(w, "Error parsing request", http.StatusBadRequest)
-		return
-	}
-
-	log.Printf("Requested model: %s", chatReq.Model)
+// HandleChatCompletion handles a chat completion request
+func (b *deepseekBackend) HandleChatCompletion(ctx context.Context, w http.ResponseWriter, r *http.Request, req *openai.ChatCompletionRequest) {
+	lgr, ctx := logutils.FromContext(ctx).Clone(b.Name())
+	lgr.Debugf(ctx, "Requested model: %s", req.Model)
 
 	// Store original model name for response
-	originalModel := chatReq.Model
+	originalModel := req.Model
 
 	// Convert to deepseek-chat internally
-	chatReq.Model = b.model
-	log.Printf("Model converted to: %s (original: %s)", b.model, originalModel)
+	req.Model = b.model
+	lgr.Debugf(ctx, "Model converted to: %s (original: %s)", b.model, originalModel)
 
 	// Convert to DeepSeek request format
 	deepseekReq := deepseek.Request{
 		Model:    b.model,
-		Messages: convertMessages(chatReq.Messages),
-		Stream:   chatReq.Stream,
+		Messages: convertMessages(ctx, req.Messages),
+		Stream:   req.Stream,
 	}
 
 	// Copy optional parameters if present
-	if chatReq.Temperature != nil {
-		deepseekReq.Temperature = *chatReq.Temperature
+	if req.Temperature != nil {
+		deepseekReq.Temperature = *req.Temperature
 	}
-	if chatReq.MaxTokens != nil {
-		deepseekReq.MaxTokens = *chatReq.MaxTokens
+	if req.MaxTokens != nil {
+		deepseekReq.MaxTokens = *req.MaxTokens
 	}
 
 	// Handle tools/functions
-	if len(chatReq.Tools) > 0 {
-		deepseekReq.Tools = convertTools(chatReq.Tools)
-		if tc := convertToolChoice(chatReq.ToolChoice); tc != "" {
+	if len(req.Tools) > 0 {
+		deepseekReq.Tools = convertTools(req.Tools)
+		if tc := convertToolChoice(req.ToolChoice); tc != "" {
 			deepseekReq.ToolChoice = tc
 		}
-	} else if len(chatReq.Functions) > 0 {
+	} else if len(req.Functions) > 0 {
 		// Convert functions to tools format
-		tools := make([]deepseek.Tool, len(chatReq.Functions))
-		for i, fn := range chatReq.Functions {
+		tools := make([]deepseek.Tool, len(req.Functions))
+		for i, fn := range req.Functions {
 			tools[i] = deepseek.Tool{
 				Type: "function",
 				Function: deepseek.Function{
@@ -137,7 +100,7 @@ func (b *deepseekBackend) HandleChatCompletions(w http.ResponseWriter, r *http.R
 		deepseekReq.Tools = tools
 
 		// Convert tool_choice if present
-		if tc := convertToolChoice(chatReq.ToolChoice); tc != "" {
+		if tc := convertToolChoice(req.ToolChoice); tc != "" {
 			deepseekReq.ToolChoice = tc
 		}
 	}
@@ -145,12 +108,13 @@ func (b *deepseekBackend) HandleChatCompletions(w http.ResponseWriter, r *http.R
 	// Create new request body
 	modifiedBody, err := json.Marshal(deepseekReq)
 	if err != nil {
-		log.Printf("Error creating modified request body: %v", err)
+		err = errors.Wrap(err, "error creating modified request body")
+		lgr.Error(ctx, err.Error())
 		http.Error(w, "Error creating modified request", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("Modified request body: %s", string(modifiedBody))
+	lgr.Debugf(ctx, "Modified request body: %s", string(modifiedBody))
 
 	// Create the proxy request to DeepSeek
 	targetURL := b.endpoint + r.URL.Path
@@ -158,10 +122,11 @@ func (b *deepseekBackend) HandleChatCompletions(w http.ResponseWriter, r *http.R
 		targetURL += "?" + r.URL.RawQuery
 	}
 
-	log.Printf("Forwarding to: %s", targetURL)
+	lgr.Infof(ctx, "Forwarding to: %s", targetURL)
 	proxyReq, err := http.NewRequest(r.Method, targetURL, bytes.NewReader(modifiedBody))
 	if err != nil {
-		log.Printf("Error creating proxy request: %v", err)
+		err = errors.Wrap(err, "error creating proxy request")
+		lgr.Error(ctx, err.Error())
 		http.Error(w, "Error creating proxy request", http.StatusInternalServerError)
 		return
 	}
@@ -172,16 +137,11 @@ func (b *deepseekBackend) HandleChatCompletions(w http.ResponseWriter, r *http.R
 	// Set DeepSeek API key and content type
 	proxyReq.Header.Set("Authorization", "Bearer "+b.apikey)
 	proxyReq.Header.Set("Content-Type", "application/json")
-	if chatReq.Stream {
+	if req.Stream {
 		proxyReq.Header.Set("Accept", "text/event-stream")
 	}
 
-	// Add Accept-Language header from request
-	if acceptLanguage := r.Header.Get("Accept-Language"); acceptLanguage != "" {
-		proxyReq.Header.Set("Accept-Language", acceptLanguage)
-	}
-
-	log.Printf("Proxy request headers: %v", proxyReq.Header)
+	lgr.Debugf(ctx, "Proxy request headers: %v", proxyReq.Header)
 
 	// Create a custom client with keepalive
 	client := &http.Client{
@@ -189,35 +149,35 @@ func (b *deepseekBackend) HandleChatCompletions(w http.ResponseWriter, r *http.R
 			AllowHTTP: true,
 			DialTLS:   nil,
 		},
-		Timeout: 5 * time.Minute,
+		Timeout: b.timeout,
 	}
 
 	// Send the request
 	resp, err := client.Do(proxyReq)
 	if err != nil {
-		log.Printf("Error forwarding request: %v", err)
+		err = errors.Wrap(err, "error forwarding request")
+		lgr.Error(ctx, err.Error())
 		http.Error(w, "Error forwarding request", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 
-	log.Printf("DeepSeek response status: %d", resp.StatusCode)
-	log.Printf("DeepSeek response headers: %v", resp.Header)
+	lgr.Debugf(ctx, "DeepSeek response status: %d", resp.StatusCode)
+	lgr.Debugf(ctx, "DeepSeek response headers: %v", resp.Header)
 
 	// Handle error responses
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode >= http.StatusBadRequest {
 		respBody, err := io.ReadAll(resp.Body)
 		if err != nil {
-			log.Printf("Error reading error response: %v", err)
+			err = errors.Wrap(err, "error reading error response")
+			lgr.Error(ctx, err.Error())
 			http.Error(w, "Error reading response", http.StatusInternalServerError)
 			return
 		}
-		log.Printf("DeepSeek error response: %s", string(respBody))
+		lgr.Infof(ctx, "DeepSeek error response: %s", string(respBody))
 
 		// Forward the error response
-		for k, v := range resp.Header {
-			w.Header()[k] = v
-		}
+		maps.Copy(w.Header(), resp.Header)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(resp.StatusCode)
 		w.Write(respBody)
@@ -225,18 +185,42 @@ func (b *deepseekBackend) HandleChatCompletions(w http.ResponseWriter, r *http.R
 	}
 
 	// Handle streaming response
-	if chatReq.Stream {
-		handleStreamingResponse(w, r, resp, originalModel)
+	if req.Stream {
+		handleStreamingResponse(ctx, w, r, resp, originalModel)
 		return
 	}
 
 	// Handle regular response
-	handleRegularResponse(w, resp, originalModel)
+	handleRegularResponse(ctx, w, resp, originalModel)
 }
-func handleStreamingResponse(w http.ResponseWriter, r *http.Request, resp *http.Response, originalModel string) {
-	log.Printf("Starting streaming response handling with model: %s", originalModel)
-	log.Printf("Response status: %d", resp.StatusCode)
-	log.Printf("Response headers: %+v", resp.Header)
+
+// ListModels returns the list of available models
+func (b *deepseekBackend) ListModels(ctx context.Context) ([]openai.Model, error) {
+	return []openai.Model{
+		{
+			ID:      deepseekconstants.DefaultChatModel,
+			Object:  "model",
+			Created: time.Now().Unix(),
+			OwnedBy: "deepseek",
+		},
+		{
+			ID:      deepseekconstants.DefaultCoderModel,
+			Object:  "model",
+			Created: time.Now().Unix(),
+			OwnedBy: "deepseek",
+		},
+	}, nil
+}
+
+// ValidateAPIKey validates the provided API key
+func (b *deepseekBackend) ValidateAPIKey(apiKey string) bool {
+	return utils.SecureCompareString(apiKey, b.apikey)
+}
+func handleStreamingResponse(ctx context.Context, w http.ResponseWriter, r *http.Request, resp *http.Response, originalModel string) {
+	lgr := logutils.FromContext(ctx)
+	lgr.Debugf(ctx, "Starting streaming response handling with model: %s", originalModel)
+	lgr.Debugf(ctx, "Response status: %d", resp.StatusCode)
+	lgr.Debugf(ctx, "Response headers: %+v", resp.Header)
 
 	// Set headers for streaming response
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -260,7 +244,8 @@ func handleStreamingResponse(w http.ResponseWriter, r *http.Request, resp *http.
 			case <-ticker.C:
 				// Send a heartbeat comment
 				if _, err := w.Write([]byte(": heartbeat\n\n")); err != nil {
-					log.Printf("Error sending heartbeat: %v", err)
+					err = errors.Wrap(err, "error sending heartbeat")
+					lgr.Error(ctx, err.Error())
 					cancel()
 					return
 				}
@@ -276,7 +261,7 @@ func handleStreamingResponse(w http.ResponseWriter, r *http.Request, resp *http.
 	for {
 		select {
 		case <-ctx.Done():
-			log.Printf("Context cancelled, ending stream")
+			lgr.Info(ctx, "Context cancelled, ending stream")
 			return
 		default:
 			line, err := reader.ReadBytes('\n')
@@ -284,7 +269,8 @@ func handleStreamingResponse(w http.ResponseWriter, r *http.Request, resp *http.
 				if err == io.EOF {
 					continue
 				}
-				log.Printf("Error reading stream: %v", err)
+				err = errors.Wrap(err, "error reading stream")
+				lgr.Error(ctx, err.Error())
 				cancel()
 				return
 			}
@@ -296,7 +282,8 @@ func handleStreamingResponse(w http.ResponseWriter, r *http.Request, resp *http.
 
 			// Write the line to the response
 			if _, err := w.Write(line); err != nil {
-				log.Printf("Error writing to response: %v", err)
+				err = errors.Wrap(err, "error writing response")
+				lgr.Error(ctx, err.Error())
 				cancel()
 				return
 			}
@@ -305,32 +292,35 @@ func handleStreamingResponse(w http.ResponseWriter, r *http.Request, resp *http.
 			if f, ok := w.(http.Flusher); ok {
 				f.Flush()
 			} else {
-				log.Printf("Warning: ResponseWriter does not support Flush")
+				lgr.Warn(ctx, "ResponseWriter does not support Flush")
 			}
 		}
 	}
 }
 
-func handleRegularResponse(w http.ResponseWriter, resp *http.Response, originalModel string) {
-	log.Printf("Handling regular (non-streaming) response")
-	log.Printf("Response status: %d", resp.StatusCode)
-	log.Printf("Response headers: %+v", resp.Header)
+func handleRegularResponse(ctx context.Context, w http.ResponseWriter, resp *http.Response, originalModel string) {
+	lgr := logutils.FromContext(ctx)
+	lgr.Infof(ctx, "Handling regular (non-streaming) response")
+	lgr.Debugf(ctx, "Response status: %d", resp.StatusCode)
+	lgr.Debugf(ctx, "Response headers: %+v", resp.Header)
 
 	// Read and log response body
 	body, err := readResponse(resp)
 	if err != nil {
-		log.Printf("Error reading response: %v", err)
+		err = errors.Wrap(err, "error reading response")
+		lgr.Error(ctx, err.Error())
 		http.Error(w, "Error reading response from upstream", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("Original response body: %s", string(body))
+	lgr.Debugf(ctx, "Original response body: %s", string(body))
 
 	// Parse the DeepSeek response
 	var deepseekResp deepseek.Response
 
 	if err := json.Unmarshal(body, &deepseekResp); err != nil {
-		log.Printf("Error parsing DeepSeek response: %v", err)
+		err = errors.Wrap(err, "error parsing DeepSeek response")
+		lgr.Error(ctx, err.Error())
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -346,22 +336,23 @@ func handleRegularResponse(w http.ResponseWriter, resp *http.Response, originalM
 			CompletionTokens: deepseekResp.Usage.CompletionTokens,
 			TotalTokens:      deepseekResp.Usage.TotalTokens,
 		},
-		Choices: convertResponseChoices(deepseekResp.Choices),
+		Choices: convertResponseChoices(ctx, deepseekResp.Choices),
 	}
 
 	// Convert back to JSON
 	modifiedBody, err := json.Marshal(openAIResp)
 	if err != nil {
-		log.Printf("Error creating modified response: %v", err)
+		err = errors.Wrap(err, "error creating modified response")
+		lgr.Error(ctx, err.Error())
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("Modified response body: %s", string(modifiedBody))
+	lgr.Debugf(ctx, "Modified response body: %s", string(modifiedBody))
 
 	// Set response headers
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	w.Write(modifiedBody)
-	log.Printf("Modified response sent successfully")
+	lgr.Info(ctx, "unary response handler completed")
 }

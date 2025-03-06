@@ -1,10 +1,11 @@
 package openrouter
 
 import (
-	"log"
+	"context"
 
 	deepseek "github.com/danilofalcao/cursor-deepseek/internal/api/deepseek/v1"
 	"github.com/danilofalcao/cursor-deepseek/internal/api/openai/v1"
+	logutils "github.com/danilofalcao/cursor-deepseek/internal/utils/logger"
 )
 
 func convertTools(tools []openai.Tool) []deepseek.Tool {
@@ -66,10 +67,11 @@ func convertToolCalls(toolCalls []openai.ToolCall, toolType string) []deepseek.T
 	return converted
 }
 
-func convertMessages(messages []openai.Message) []deepseek.Message {
+func convertMessages(ctx context.Context, messages []openai.Message) []deepseek.Message {
+	lgr := logutils.FromContext(ctx)
 	converted := make([]deepseek.Message, len(messages))
 	for i, msg := range messages {
-		log.Printf("Converting message %d - Role: %s", i, msg.Role)
+		lgr.Debugf(ctx, "Converting message %d - Role: %s", i, msg.Role)
 		var content string
 		switch msg.GetContent().(type) {
 		case openai.Content_String:
@@ -94,12 +96,12 @@ func convertMessages(messages []openai.Message) []deepseek.Message {
 		if msg.Role == "function" {
 			converted[i].Role = "tool"
 			converted[i].ToolCalls = convertToolCalls(msg.ToolCalls, "")
-			log.Printf("Converted function role to tool role")
+			lgr.Debug(ctx, "Converted function role to tool role")
 		}
 
 		// Handle assistant messages with tool calls
 		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
-			log.Printf("Processing assistant message with %d tool calls", len(msg.ToolCalls))
+			lgr.Debugf(ctx, "Processing assistant message with %d tool calls", len(msg.ToolCalls))
 
 			// Ensure tool calls are properly formatted
 			converted[i].ToolCalls = convertToolCalls(msg.ToolCalls, "function")
@@ -107,10 +109,10 @@ func convertMessages(messages []openai.Message) []deepseek.Message {
 
 		// Handle tool response messages
 		if msg.Role == "tool" || msg.Role == "function" {
-			log.Printf("Processing tool/function response message")
+			lgr.Debugf(ctx, "Processing tool/function response message")
 			converted[i].Role = "tool"
 			if msg.Name != "" {
-				log.Printf("Tool response from function: %s", msg.Name)
+				lgr.Debugf(ctx, "Tool response from function: %s", msg.Name)
 			}
 		}
 	}

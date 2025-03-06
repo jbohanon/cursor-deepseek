@@ -6,130 +6,94 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log"
+	"maps"
 	"net/http"
 	"time"
 
 	deepseek "github.com/danilofalcao/cursor-deepseek/internal/api/deepseek/v1"
 	"github.com/danilofalcao/cursor-deepseek/internal/api/openai/v1"
 	"github.com/danilofalcao/cursor-deepseek/internal/backend"
+	"github.com/danilofalcao/cursor-deepseek/internal/utils"
+	logutils "github.com/danilofalcao/cursor-deepseek/internal/utils/logger"
+	"github.com/pkg/errors"
 	"golang.org/x/net/http2"
 )
 
-// TODO: Implement the OpenRouter backend as a backend.Backend
 var _ backend.Backend = &openrouterBackend{}
 
 type openrouterBackend struct {
 	endpoint string
 	model    string
 	apikey   string
+	timeout  time.Duration
 }
 
 type Options struct {
 	Endpoint string
 	Model    string
 	ApiKey   string
+	Timeout  time.Duration
 }
 
 func NewOpenrouterBackend(opts Options) backend.Backend {
 	return &openrouterBackend{
 		endpoint: opts.Endpoint,
 		model:    opts.Model,
+		apikey:   opts.ApiKey,
+		timeout:  opts.Timeout,
 	}
 }
 
-func (b *openrouterBackend) HandleModelsRequest(w http.ResponseWriter) {
-	log.Printf("Handling models request")
-
-	response := openai.ModelsResponse{
-		Object: "list",
-		Data: []openai.Model{
-			{
-				ID:      b.model,
-				Object:  "model",
-				Created: time.Now().Unix(),
-				OwnedBy: "deepseek",
-			},
-		},
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
-	log.Printf("Models response sent successfully")
+// Name returns the name of the backend
+func (b *openrouterBackend) Name() string {
+	return "openrouter"
 }
 
-func (b *openrouterBackend) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
-	// Read and log request body for debugging
-	var chatReq openai.ChatCompletionRequest
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		log.Printf("Error reading request body: %v", err)
-		http.Error(w, "Error reading request", http.StatusBadRequest)
-		return
-	}
-	r.Body = io.NopCloser(bytes.NewBuffer(body))
+// HandleChatCompletion handles a chat completion request. This method must capture and
+// return to the client all errors on the provided writer.
+func (b *openrouterBackend) HandleChatCompletion(ctx context.Context, w http.ResponseWriter, r *http.Request, req *openai.ChatCompletionRequest) {
+	lgr, ctx := logutils.FromContext(ctx).Clone(b.Name())
 
-	if err := json.Unmarshal(body, &chatReq); err != nil {
-		log.Printf("Error parsing request JSON: %v", err)
-		log.Printf("Raw request body: %s", string(body))
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
-		return
-	}
-
-	log.Printf("Parsed request: %+v", chatReq)
-
-	// Restore the body for further reading
-	r.Body = io.NopCloser(bytes.NewBuffer(body))
-
-	log.Printf("Request body: %s", string(body))
-
-	// Parse the request to check for streaming - reuse existing chatReq
-	if err := json.Unmarshal(body, &chatReq); err != nil {
-		log.Printf("Error parsing request JSON: %v", err)
-		http.Error(w, "Error parsing request", http.StatusBadRequest)
-		return
-	}
-
-	log.Printf("Requested model: %s", chatReq.Model)
+	lgr.Debugf(ctx, "Requested model: %s", req.Model)
 
 	// Store original model name for response
-	originalModel := chatReq.Model
+	originalModel := req.Model
 
 	// Convert to deepseek-chat internally
-	chatReq.Model = b.model
-	log.Printf("Model converted to: %s (original: %s)", b.model, originalModel)
+	req.Model = b.model
+	lgr.Debugf(ctx, "Model converted to: %s (original: %s)", b.model, originalModel)
 
 	// Convert to DeepSeek request format
 	deepseekReq := deepseek.Request{
 		Model:    b.model,
-		Messages: convertMessages(chatReq.Messages),
-		Stream:   chatReq.Stream,
+		Messages: convertMessages(ctx, req.Messages),
+		Stream:   req.Stream,
 	}
 
 	// Set default temperature if not provided
-	if chatReq.Temperature != nil {
-		deepseekReq.Temperature = *chatReq.Temperature
+	if req.Temperature != nil {
+		deepseekReq.Temperature = *req.Temperature
 	} else {
 		defaultTemp := 0.7
 		deepseekReq.Temperature = defaultTemp
 	}
 
 	// Set default max tokens if not provided
-	if chatReq.MaxTokens != nil {
-		deepseekReq.MaxTokens = *chatReq.MaxTokens
+	if req.MaxTokens != nil {
+		deepseekReq.MaxTokens = *req.MaxTokens
 	} else {
 		defaultMaxTokens := 4096
 		deepseekReq.MaxTokens = defaultMaxTokens
 	}
 
 	// Handle tools and tool choice
-	if len(chatReq.Tools) > 0 {
-		deepseekReq.Tools = convertTools(chatReq.Tools)
-		deepseekReq.ToolChoice = convertToolChoice(chatReq.ToolChoice)
-	} else if len(chatReq.Functions) > 0 {
+	if len(req.Tools) > 0 {
+		deepseekReq.Tools = convertTools(req.Tools)
+		deepseekReq.ToolChoice = convertToolChoice(req.ToolChoice)
+	} else if len(req.Functions) > 0 {
 		// Convert legacy functions to tools
-		tools := make([]deepseek.Tool, len(chatReq.Functions))
-		for i, fn := range chatReq.Functions {
+		tools := make([]deepseek.Tool, len(req.Functions))
+		for i, fn := range req.Functions {
 			tools[i] = deepseek.Tool{
 				Type: "function",
 				Function: deepseek.Function{
@@ -140,18 +104,19 @@ func (b *openrouterBackend) HandleChatCompletions(w http.ResponseWriter, r *http
 			}
 		}
 		deepseekReq.Tools = tools
-		deepseekReq.ToolChoice = convertToolChoice(chatReq.ToolChoice)
+		deepseekReq.ToolChoice = convertToolChoice(req.ToolChoice)
 	}
 
 	// Create new request body
 	modifiedBody, err := json.Marshal(deepseekReq)
 	if err != nil {
-		log.Printf("Error creating modified request body: %v", err)
+		err = errors.Wrap(err, "error creating modified request body")
+		lgr.Error(ctx, err.Error())
 		http.Error(w, "Error creating modified request", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("Modified request body: %s", string(modifiedBody))
+	lgr.Debugf(ctx, "Modified request body: %s", string(modifiedBody))
 
 	// Create the proxy request to OpenRouter
 	targetURL := b.endpoint + "/chat/completions"
@@ -159,10 +124,11 @@ func (b *openrouterBackend) HandleChatCompletions(w http.ResponseWriter, r *http
 		targetURL += "?" + r.URL.RawQuery
 	}
 
-	log.Printf("Forwarding to: %s", targetURL)
+	lgr.Debugf(ctx, "Forwarding to: %s", targetURL)
 	proxyReq, err := http.NewRequest(r.Method, targetURL, bytes.NewReader(modifiedBody))
 	if err != nil {
-		log.Printf("Error creating proxy request: %v", err)
+		err = errors.Wrap(err, "error creating proxy request")
+		lgr.Error(ctx, err.Error())
 		http.Error(w, "Error creating proxy request", http.StatusInternalServerError)
 		return
 	}
@@ -175,16 +141,11 @@ func (b *openrouterBackend) HandleChatCompletions(w http.ResponseWriter, r *http
 	proxyReq.Header.Set("Content-Type", "application/json")
 	proxyReq.Header.Set("HTTP-Referer", "https://github.com/danilofalcao/cursor-deepseek") // Optional, for OpenRouter rankings
 	proxyReq.Header.Set("X-Title", "Cursor DeepSeek")                                      // Optional, for OpenRouter rankings
-	if chatReq.Stream {
+	if req.Stream {
 		proxyReq.Header.Set("Accept", "text/event-stream")
 	}
 
-	// Add Accept-Language header from request
-	if acceptLanguage := r.Header.Get("Accept-Language"); acceptLanguage != "" {
-		proxyReq.Header.Set("Accept-Language", acceptLanguage)
-	}
-
-	log.Printf("Proxy request headers: %v", proxyReq.Header)
+	lgr.Debugf(ctx, "Proxy request headers: %v", proxyReq.Header)
 
 	// Create a custom client with keepalive
 	client := &http.Client{
@@ -197,11 +158,10 @@ func (b *openrouterBackend) HandleChatCompletions(w http.ResponseWriter, r *http
 	}
 
 	// Create context with timeout based on streaming
-	ctx := context.Background()
-	if !chatReq.Stream {
+	if !req.Stream {
 		// Use timeout only for non-streaming requests
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, 5*time.Minute)
+		ctx, cancel = context.WithTimeout(ctx, b.timeout)
 		defer cancel()
 	}
 
@@ -211,29 +171,30 @@ func (b *openrouterBackend) HandleChatCompletions(w http.ResponseWriter, r *http
 	// Send the request
 	resp, err := client.Do(proxyReq)
 	if err != nil {
-		log.Printf("Error forwarding request: %v", err)
+		err = errors.Wrap(err, "error forwarding request")
+		lgr.Error(ctx, err.Error())
 		http.Error(w, "Error forwarding request", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 
-	log.Printf("OpenRouter response status: %d", resp.StatusCode)
-	log.Printf("OpenRouter response headers: %v", resp.Header)
+	lgr.Debugf(ctx, "OpenRouter response status: %d", resp.StatusCode)
+	lgr.Debugf(ctx, "OpenRouter response headers: %v", resp.Header)
 
 	// Handle error responses
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode >= http.StatusBadRequest {
 		respBody, err := io.ReadAll(resp.Body)
 		if err != nil {
-			log.Printf("Error reading error response: %v", err)
+			err = errors.Wrapf(err, "error reading error response")
+			lgr.Error(ctx, err.Error())
 			http.Error(w, "Error reading response", http.StatusInternalServerError)
 			return
 		}
-		log.Printf("OpenRouter error response: %s", string(respBody))
+
+		lgr.Infof(ctx, "OpenRouter error response: %s", string(respBody))
 
 		// Forward the error response
-		for k, v := range resp.Header {
-			w.Header()[k] = v
-		}
+		maps.Copy(w.Header(), resp.Header)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(resp.StatusCode)
 		w.Write(respBody)
@@ -241,17 +202,35 @@ func (b *openrouterBackend) HandleChatCompletions(w http.ResponseWriter, r *http
 	}
 
 	// Handle streaming response
-	if chatReq.Stream {
-		handleStreamingResponse(w, resp)
+	if req.Stream {
+		handleStreamingResponse(ctx, w, resp)
 		return
 	}
 
 	// Handle regular response
-	handleRegularResponse(w, resp, originalModel)
+	handleRegularResponse(ctx, w, resp, originalModel)
 }
 
-func handleStreamingResponse(w http.ResponseWriter, resp *http.Response) {
-	log.Printf("Starting streaming response handling")
+// ListModels returns the list of available models
+func (b *openrouterBackend) ListModels(ctx context.Context) ([]openai.Model, error) {
+	return []openai.Model{
+		{
+			ID:      b.model,
+			Object:  "model",
+			Created: time.Now().Unix(),
+			OwnedBy: "deepseek",
+		},
+	}, nil
+}
+
+// ValidateAPIKey validates the provided API key
+func (b *openrouterBackend) ValidateAPIKey(apiKey string) bool {
+	return utils.SecureCompareString(apiKey, b.apikey)
+}
+
+func handleStreamingResponse(ctx context.Context, w http.ResponseWriter, resp *http.Response) {
+	lgr := logutils.FromContext(ctx)
+	lgr.Debug(ctx, "Starting streaming response handling")
 
 	// Set headers for streaming response
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -263,11 +242,8 @@ func handleStreamingResponse(w http.ResponseWriter, resp *http.Response) {
 	reader := bufio.NewReaderSize(resp.Body, 1024)
 
 	// Create a context that will be cancelled when the client disconnects
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-
-	// Create a channel to detect client disconnection
-	clientGone := w.(http.CloseNotifier).CloseNotify()
 
 	// Create a channel for errors
 	errChan := make(chan error, 1)
@@ -279,10 +255,6 @@ func handleStreamingResponse(w http.ResponseWriter, resp *http.Response) {
 			select {
 			case <-ctx.Done():
 				return
-			case <-clientGone:
-				log.Printf("Client connection closed")
-				cancel()
-				return
 			default:
 				// Read until we get a complete SSE message
 				var buffer bytes.Buffer
@@ -290,16 +262,16 @@ func handleStreamingResponse(w http.ResponseWriter, resp *http.Response) {
 					line, err := reader.ReadBytes('\n')
 					if err != nil {
 						if err == io.EOF {
-							log.Printf("EOF reached")
+							lgr.Debug(ctx, "EOF reached")
 							return
 						}
-						log.Printf("Error reading from response: %v", err)
+						err = errors.Wrap(err, "error reading from upstream server stream")
 						errChan <- err
 						return
 					}
 
 					// Log the received line for debugging
-					log.Printf("Received line: %s", string(line))
+					lgr.Debugf(ctx, "Received line: %s", string(line))
 
 					// Write to buffer
 					buffer.Write(line)
@@ -320,7 +292,7 @@ func handleStreamingResponse(w http.ResponseWriter, resp *http.Response) {
 
 				// Write the message
 				if _, err := w.Write(message); err != nil {
-					log.Printf("Error writing to client: %v", err)
+					err = errors.Wrap(err, "error writing to downstream client stream")
 					errChan <- err
 					return
 				}
@@ -328,7 +300,7 @@ func handleStreamingResponse(w http.ResponseWriter, resp *http.Response) {
 				// Flush after each complete message
 				if f, ok := w.(http.Flusher); ok {
 					f.Flush()
-					log.Printf("Flushed message to client")
+					lgr.Debug(ctx, "flushed message to client")
 				}
 			}
 		}
@@ -338,36 +310,37 @@ func handleStreamingResponse(w http.ResponseWriter, resp *http.Response) {
 	select {
 	case err := <-errChan:
 		if err != nil {
-			log.Printf("Error in streaming response: %v", err)
+			lgr.Error(ctx, err.Error())
 		}
-	case <-clientGone:
-		log.Printf("Client disconnected")
 	case <-ctx.Done():
-		log.Printf("Context cancelled")
+		lgr.Info(ctx, "context cancelled")
 	}
 
-	log.Printf("Streaming response handler completed")
+	lgr.Info(ctx, "streaming response handler completed")
 }
 
-func handleRegularResponse(w http.ResponseWriter, resp *http.Response, originalModel string) {
-	log.Printf("Handling regular (non-streaming) response")
-	log.Printf("Response status: %d", resp.StatusCode)
-	log.Printf("Response headers: %+v", resp.Header)
+func handleRegularResponse(ctx context.Context, w http.ResponseWriter, resp *http.Response, originalModel string) {
+	lgr := logutils.FromContext(ctx)
+	lgr.Infof(ctx, "Handling regular (non-streaming) response")
+	lgr.Debugf(ctx, "Response status: %d", resp.StatusCode)
+	lgr.Debugf(ctx, "Response headers: %+v", resp.Header)
 
 	// Read and log response body
 	body, err := readResponse(resp)
 	if err != nil {
-		log.Printf("Error reading response: %v", err)
+		err = errors.Wrap(err, "error reading response")
+		lgr.Error(ctx, err.Error())
 		http.Error(w, "Error reading response from upstream", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("Original response body: %s", string(body))
+	lgr.Debugf(ctx, "Original response body: %s", string(body))
 
 	// Parse the DeepSeek response
 	var deepseekResp deepseek.Response
 	if err := json.Unmarshal(body, &deepseekResp); err != nil {
-		log.Printf("Error parsing DeepSeek response: %v", err)
+		err = errors.Wrap(err, "error parsing DeepSeek response")
+		lgr.Error(ctx, err.Error())
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -389,16 +362,17 @@ func handleRegularResponse(w http.ResponseWriter, resp *http.Response, originalM
 	// Convert back to JSON
 	modifiedBody, err := json.Marshal(deepseekResp)
 	if err != nil {
-		log.Printf("Error creating modified response: %v", err)
+		err = errors.Wrap(err, "error creating modified response")
+		lgr.Error(ctx, err.Error())
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("Modified response body: %s", string(modifiedBody))
+	lgr.Debugf(ctx, "Modified response body: %s", string(modifiedBody))
 
 	// Set response headers
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	w.Write(modifiedBody)
-	log.Printf("Modified response sent successfully")
+	lgr.Info(ctx, "unary response handler completed")
 }
