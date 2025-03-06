@@ -14,6 +14,7 @@ import (
 	openrouterconstants "github.com/danilofalcao/cursor-deepseek/internal/constants/openrouter"
 	"github.com/danilofalcao/cursor-deepseek/internal/server"
 	"github.com/pkg/errors"
+	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 )
 
@@ -33,23 +34,37 @@ type config struct {
 }
 
 func Run() {
+	var configPath *string = pflag.StringP("config", "c", "", "sets the config file location e.g. $HOME/proxy-config.yaml")
+
+	pflag.Parse()
 	ctx := context.Background()
 	exitCh := make(chan string, 1)
 
 	// Have to use custom key delimiter to allow for models with periods in the name
 	v := viper.NewWithOptions(
 		viper.KeyDelimiter("#"),
-		viper.EnvKeyReplacer(strings.NewReplacer(".", "_")),
+		viper.EnvKeyReplacer(strings.NewReplacer("#", "_")),
 	)
-	v.SetConfigName("config")
-	v.SetConfigType("yaml")
-	v.AddConfigPath(".")
-	// v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+
+	if configPath != nil && *configPath != "" {
+		v.SetConfigFile(*configPath)
+	} else {
+		v.SetConfigName("config")
+		v.SetConfigType("yaml")
+		v.AddConfigPath(".")
+	}
+
 	v.SetDefault("deepseek#default_model", deepseekconstants.DefaultChatModel)
 	v.SetDefault("deepseek#endpoint", deepseekconstants.DefaultEndpoint)
 	v.SetDefault("openrouter#default_model", openrouterconstants.DefaultModel)
 	v.SetDefault("openrouter#endpoint", openrouterconstants.DefaultEndpoint)
 	v.SetDefault("ollama#default_model", ollamaconstants.DefaultModel)
+
+	v.BindPFlags(pflag.CommandLine)
+
+	// Alias the previous env syntax to the new
+	v.BindEnv("ollama#endpoint", "OLLAMA_API_ENDPOINT")
+	v.AutomaticEnv()
 
 	err := v.ReadInConfig()
 	if err != nil {
@@ -64,7 +79,7 @@ func Run() {
 	}
 
 	svr, err := server.New(ctx, server.Options{
-		Port:     "9000",
+		Port:     cfg.Port,
 		Backend:  getBackend(v),
 		LogLevel: "debug",
 		Timeout:  "30s",
