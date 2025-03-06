@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/danilofalcao/cursor-deepseek/internal/server/logger"
+	"github.com/danilofalcao/cursor-deepseek/internal/logger"
 )
 
 // ChatCompletionRequest represents an OpenAI-compatible chat completion request

@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/danilofalcao/cursor-deepseek/internal/constants"
-	"github.com/danilofalcao/cursor-deepseek/internal/server/logger"
+	"github.com/danilofalcao/cursor-deepseek/internal/logger"
 )
 
 // FromContext retrieves the logger from the context

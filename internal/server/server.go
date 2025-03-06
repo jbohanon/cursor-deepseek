@@ -9,7 +9,7 @@ import (
 
 	"github.com/danilofalcao/cursor-deepseek/internal/api/openai/v1"
 	"github.com/danilofalcao/cursor-deepseek/internal/backend"
-	"github.com/danilofalcao/cursor-deepseek/internal/server/logger"
+	"github.com/danilofalcao/cursor-deepseek/internal/logger"
 	"github.com/danilofalcao/cursor-deepseek/internal/server/middleware"
 	logutils "github.com/danilofalcao/cursor-deepseek/internal/utils/logger"
 	"github.com/pkg/errors"
