@@ -1,10 +1,12 @@
-# DeepSeek API Proxy
+# OpenAI API Proxy
 
-A high-performance HTTP/2-enabled proxy server designed specifically to enable Cursor IDE's Composer to use DeepSeek's, OpenRouter's and Ollama's language models. This proxy translates OpenAI-compatible API requests to DeepSeek/OpenRouter/Ollama API format, allowing Cursor's Composer and other OpenAI API-compatible tools to seamlessly work with these models.
+A high-performance HTTP/2-enabled proxy server designed to interface the OpenAI API specification to alternative language models. 
+
+This proxy translates OpenAI-compatible API requests to alternative API formats, allowing Cursor's Composer and other OpenAI API-compatible tools to seamlessly work with these models.
 
 ## Primary Use Case
 
-This proxy was created to enable Cursor IDE users to leverage DeepSeek's, OpenRouter's and Ollama's powerful language models through Cursor's Composer interface as an alternative to OpenAI's models. By running this proxy locally, you can configure Cursor's Composer to use these models for AI assistance, code generation, and other AI features. It handles all the necessary request/response translations and format conversions to make the integration seamless.
+This proxy was created originally to enable Cursor IDE users to leverage alternative (e.g. DeepSeek, OpenRouter, and Ollama) powerful language models through Cursor's Composer interface as an alternative to OpenAI's models. By running this proxy locally, you can configure Cursor's Composer to use these models for AI assistance, code generation, and other AI features. It handles all the necessary request/response translations and format conversions to make the integration seamless.
 
 ## Features
 
@@ -13,15 +15,15 @@ This proxy was created to enable Cursor IDE users to leverage DeepSeek's, OpenRo
 - Streaming responses
 - Support for function calling/tools
 - Automatic message format conversion
-- Compression support (Brotli, Gzip, Deflate)
+- Compression support (Brotli, Gzip, Deflate) (DeepSeek only)
 - Compatible with OpenAI API client libraries
 - API key validation for secure access
-- Docker container support with multi-variant builds
+- ~~Docker container support with multi-variant builds~~ returning soon
 
-## Prerequisites
+## Prerequisites for Cursor use
 
 - Cursor Pro Subscription
-- Go 1.19 or higher
+- Go 1.24 or higher
 - DeepSeek or OpenRouter API key
 - Ollama server running locally (optional, for Ollama support)
 - Public Endpoint
@@ -29,11 +31,12 @@ This proxy was created to enable Cursor IDE users to leverage DeepSeek's, OpenRo
 ## Installation
 
 1. Clone the repository
-2. Install dependencies:
+1. Install dependencies:
 ```bash
 go mod download
 ```
 
+<!--- TODO: fix docker
 ### Docker Installation
 
 The proxy supports both DeepSeek and OpenRouter variants. Choose the appropriate build command for your needs:
@@ -67,112 +70,87 @@ docker run -p 9000:9000 --env-file .env cursor-openrouter
 # OR for Ollama
 docker run -p 9000:9000 --env-file .env cursor-ollama
 ```
+--->
 
 ## Configuration
 
-The repository includes an `.env.example` file showing the required environment variables. To configure:
 
-1. Copy the example configuration:
-```bash
-cp .env.example .env
+Backend configuration will be selected based on precedent of configured values as below:
+1. If config.yaml `deepseek.api_key` or env `DEEPSEEK_API_KEY` is set, the DeepSeek backend will be used.
+1. If config.yaml `openrouter.api_key` or env `OPENROUTER_API_KEY` is set, the OpenRouter backend will be used.
+1. If config.yaml `ollama.endpoint` or env `OLLAMA_ENDPOINT` is set, the Ollama backend will be used.
+
+```yaml
+port: "9000"
+log_level: info # one of trace, debug, info, warn, error, fatal
+timeout: 60s # must be duration format compatible with Go's duration parsing. Read about it [here](https://pkg.go.dev/time#ParseDuration)
+
+# note that only one backend should be configured, but they all have the same options
+# deepseek:
+# openrouter:
+ollama:
+  endpoint: "http://127.0.0.1:11434/api"
+  api_key: "foobar"
+  models:
+    o1: deepseek-r1:14b
+    gpt-4o: llama3
+    gpt-3.5-turbo: llama2
+    claude-3.7-sonnet: deepseek-r1:14b
+  default_model: llama3
 ```
-
-2. Edit `.env` and add your API key:
-```bash
-# For DeepSeek
-DEEPSEEK_API_KEY=your_deepseek_api_key_here
-
-# OR for OpenRouter
-OPENROUTER_API_KEY=your_openrouter_api_key_here
-
-# OR for Ollama
-OLLAMA_API_KEY=your_ollama_api_key_here
-```
-
-Note: Only configure ONE of the API keys based on which variant you're using.
 
 ## Usage
 
-1. Start the proxy server:
-```bash
-go run proxy.go
-# OR you can specify a model:
-go run proxy.go -model coder
-# OR
-go run proxy.go -model chat
-# OR for OpenRouter
-go run proxy-openrouter.go
-# OR for Ollama
-go run proxy-ollama.go
-```
+1. Start by copying the config.yaml.example to config.yaml `cp ./config.yaml.example ./config.yaml`
+1. Add config per the options.
+1. Run the proxy with `go run ./cmd/main.go`
+1. Use the proxy with your OpenAI API clients by setting the base URL to `http://your-public-endpoint:9000/v1`
 
-The server will start on port 9000 by default.
-
-2. Use the proxy with your OpenAI API clients by setting the base URL to `http://your-public-endpoint:9000/v1`
-
+## Config Reference
 
 ## Exposing the Endpoint Publicly
 
 You can expose your local proxy server to the internet using ngrok or similar services. This is useful when you need to access the proxy from external applications or different networks.
 
-### Using ngrok
+The methods listed herein are for reference only and should _NOT_ be used for production services. For such, a reverse proxy or API gateway would be advisable.
 
+### `ngrok`
 1. Install ngrok from https://ngrok.com/download
+1. Start your proxy server locally (it will run on port 9000)
+1. In a new terminal, run ngrok: `ngrok http 9000`
+1. ngrok will provide you with a public URL (e.g., https://your-unique-id.ngrok.io)
+1. Use this URL as your OpenAI API base URL in Cursor's settings: `https://your-unique-id.ngrok.io/v1`
 
-2. Start your proxy server locally (it will run on port 9000)
+### Cloudflare Tunnel
+1. Install cloudflared (see https://github.com/cloudflare/cloudflared for details)
+1. Run: `cloudflared tunnel --url http://localhost:9000`
 
-3. In a new terminal, run ngrok:
-```bash
-ngrok http 9000
-```
-
-4. ngrok will provide you with a public URL (e.g., https://your-unique-id.ngrok.io)
-
-5. Use this URL as your OpenAI API base URL in Cursor's settings:
-```
-https://your-unique-id.ngrok.io/v1
-```
-
-### Alternative Methods
-
-You can also use other services to expose your endpoint:
-
-1. **Cloudflare Tunnel**: 
-   - Install cloudflared
-   - Run: `cloudflared tunnel --url http://localhost:9000`
-
-2. **LocalTunnel**:
-   - Install: `npm install -g localtunnel`
-   - Run: `lt --port 9000`
+### LocalTunnel
+1. Install: `npm install -g localtunnel`
+2. Run: `lt --port 9000`
 
 Remember to always secure your endpoint appropriately when exposing it to the internet.
 
 
-### Supported Endpoints
+## Supported Endpoints
 
 - `/v1/chat/completions` - Chat completions endpoint
 - `/v1/models` - Models listing endpoint
 
-### Model Mapping
-
-- `gpt-4o` maps to DeepSeek's GPT-4o equivalent model
-- `deepseek-chat` for DeepSeek's native chat model
-- `deepseek/deepseek-chat` for OpenRouter's DeepSeek model
-
-## Dependencies
-
-- `github.com/andybalholm/brotli` - Brotli compression support
-- `github.com/joho/godotenv` - Environment variable management
-- `golang.org/x/net` - HTTP/2 support
+## Model Mapping
+Models may be mapped by backend configuration. If no model mapping exists, then all requests will use the configured defaultModel. If _that_ is not configured, then they will use default models defined in `internal/constants/<backend>/<backend>.go`. These defaults are:
+- DeepSeek backend: `deepseek-chat`
+- OpenRouter backend: `deepseek/deepseek-chat`
+- Ollama backend: `llama3`
 
 ## Security
 
 - The proxy includes CORS headers for cross-origin requests
-- API keys are required and validated against environment variables
+- API keys are required and validated against config or, as a fallback, environment variables
 - Secure handling of request/response data
-- Strict API key validation for all requests
-- HTTPS support through HTTP/2
-- Environment variables are never committed to the repository
+- Strict API key validation for all requests (if API key is configured) <!-- TODO: validate API Key is configured for DS and OR backends -->
+- HTTPS support
+- `config.yaml` and `.env` are never committed to the repository
 
 ## License
 
